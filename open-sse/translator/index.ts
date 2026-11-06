@@ -8,7 +8,7 @@ import {
   NON_ANTHROPIC_THINKING_PLACEHOLDER,
   prepareClaudeRequest,
 } from "./helpers/claudeHelper.ts";
-import { filterToOpenAIFormat } from "./helpers/openaiHelper.ts";
+import { filterToOpenAIFormat, normalizeOpenAIChatReasoning } from "./helpers/openaiHelper.ts";
 import {
   providerHonorsOpenAIFormatCacheControl,
   resolveConnectionCacheOverride,
@@ -659,6 +659,11 @@ export function translateRequest(
   // Always normalize to clean OpenAI format when target is OpenAI
   // This handles hybrid requests (e.g., OpenAI messages + Claude tools)
   if (targetFormat === FORMATS.OPENAI) {
+    // #18912: same-format requests also carry router-only effort / Responses
+    // reasoning. Normalize before downstream tools/sampling guards consume them.
+    if (normalizedProvider === "openai") {
+      result = normalizeOpenAIChatReasoning(result);
+    }
     // #2069 — preserve client cache_control breakpoints only for providers that
     // honor explicit OpenAI-format markers (DashScope/alibaba, Xiaomi MiMo) when
     // requested upstream; generic/implicit-cache OpenAI providers stay stripped.

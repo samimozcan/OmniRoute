@@ -27,6 +27,11 @@ before(async () => {
 
 after(() => {
   resetDbInstance();
+});
+
+// Combo success queues best-effort metadata work. Keep its isolated directory
+// until process exit so those pending reads cannot reopen a deleted DB path.
+process.once("exit", () => {
   fs.rmSync(testDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 

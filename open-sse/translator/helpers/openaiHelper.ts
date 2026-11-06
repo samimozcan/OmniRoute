@@ -49,6 +49,30 @@ export const OPENAI_CONTENT_PART_FIELDS: Record<string, readonly string[]> = {
 };
 const CLAUDE_TOOL_CHOICE_REQUIRED = "an" + "y";
 
+/**
+ * OpenAI Chat Completions accepts only the flat reasoning_effort carrier.
+ * The shared normalizer keeps canonical effort and nested reasoning until the
+ * destination is known; consume those fields here without losing explicit intent.
+ * Other OpenAI-compatible providers can have their own nested reasoning contract.
+ */
+export function normalizeOpenAIChatReasoning(
+  body: Record<string, unknown>
+): Record<string, unknown> {
+  if (body.effort === undefined && body.reasoning === undefined) return body;
+
+  const next = { ...body };
+  const reasoning =
+    body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
+      ? (body.reasoning as Record<string, unknown>)
+      : null;
+  if (next.reasoning_effort === undefined && reasoning?.effort !== undefined) {
+    next.reasoning_effort = reasoning.effort;
+  }
+  delete next.effort;
+  delete next.reasoning;
+  return next;
+}
+
 // Filter messages to OpenAI standard format
 // Remove: redacted_thinking, and other non-OpenAI blocks
 // Convert: thinking blocks → reasoning_content on the message
