@@ -961,7 +961,9 @@ async function materializeConnection(
     requestedModel?: string | null;
   } = {}
 ) {
-  const providerSpecificData = await hydrateConnectionProviderSpecificData(connection);
+  const providerSpecificData = { ...(await hydrateConnectionProviderSpecificData(connection)) };
+  // Keep the reporting-only Admin key behind the server reporting boundary.
+  delete providerSpecificData.openaiAdminApiKey;
   const apiKeyHealth = providerSpecificData.apiKeyHealth as Record<string, KeyHealth> | undefined;
   if (apiKeyHealth) syncHealthFromDB(connection.id, apiKeyHealth);
   const releaseOAuthSession =

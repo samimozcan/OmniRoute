@@ -566,4 +566,93 @@ describe("conn-modals (Phase 1c extraction)", () => {
     });
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ defaultModel: null }));
   });
+
+  it("a normal connection save preserves reporting settings saved in the dedicated editor", async () => {
+    const originalMetadata = {
+      openaiAdminApiKey: "server-only-admin-key",
+      openaiReportingProjectId: "proj_A",
+      openaiReportingApiKeyId: "key_A",
+      openaiReportingPeriod: "month",
+      tags: ["production"],
+    };
+    let storedMetadata = { ...originalMetadata };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/openai-reporting")) {
+          if (init?.method === "PUT") {
+            storedMetadata = { ...storedMetadata, ...JSON.parse(String(init.body)) };
+          }
+          return Response.json({
+            encryptionReady: true,
+            adminKeyConfigured: true,
+            projectId: storedMetadata.openaiReportingProjectId,
+            apiKeyId: storedMetadata.openaiReportingApiKeyId,
+            period: storedMetadata.openaiReportingPeriod,
+          });
+        }
+        return Response.json({});
+      })
+    );
+    const onSave = vi.fn(async (updates: { providerSpecificData?: Record<string, unknown> }) => {
+      storedMetadata = { ...storedMetadata, ...updates.providerSpecificData };
+    });
+    const c = renderModal(
+      <EditConnectionModal
+        isOpen={true}
+        connection={{
+          id: "openai-reporting",
+          name: "OpenAI",
+          provider: "openai",
+          authType: "apikey",
+          providerSpecificData: originalMetadata,
+        }}
+        providerId="openai"
+        onSave={onSave}
+        onClose={vi.fn()}
+      />
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const label = Array.from(c.querySelectorAll("label")).find(
+      (item) => item.textContent === "Reporting period"
+    );
+    const period = c.querySelector<HTMLSelectElement>(`[id="${label?.htmlFor}"]`);
+    expect(period).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(period, "7d");
+      period!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const reportingSave = Array.from(c.querySelectorAll("button")).find(
+      (button) => button.textContent === "Save reporting settings"
+    );
+    await act(async () => {
+      reportingSave!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(storedMetadata.openaiReportingPeriod).toBe("7d");
+    const saveButton = Array.from(c.querySelectorAll("button")).find(
+      (button) => button.textContent === "providers.save"
+    );
+    await act(async () => {
+      saveButton!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(storedMetadata.openaiReportingPeriod).toBe("7d");
+    expect(onSave.mock.calls[0][0].providerSpecificData).not.toHaveProperty("openaiAdminApiKey");
+    expect(onSave.mock.calls[0][0].providerSpecificData).not.toHaveProperty(
+      "openaiReportingProjectId"
+    );
+    expect(onSave.mock.calls[0][0].providerSpecificData).not.toHaveProperty(
+      "openaiReportingApiKeyId"
+    );
+    expect(onSave.mock.calls[0][0].providerSpecificData).not.toHaveProperty(
+      "openaiReportingPeriod"
+    );
+  });
 });

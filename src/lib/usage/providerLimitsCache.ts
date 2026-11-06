@@ -2,6 +2,8 @@ import type { ProviderLimitsCacheEntry } from "@/lib/db/providerLimits";
 import { sanitizeProviderBillingStatus } from "@/shared/utils/providerBilling";
 import { GROK_BUILD_ADDITIONAL_CREDITS_URL } from "@/shared/utils/grokBilling";
 import { parseCodexPaidCredits } from "@/lib/providers/codexPaidCredits";
+import type { OpenAIUsageReport } from "@omniroute/open-sse/services/usage/openaiTypes.ts";
+import { ageOpenAIRateLimitObservations } from "@omniroute/open-sse/services/usage/openaiRateLimits.ts";
 
 const GROK_CLI_PROVIDER = "grok-cli";
 const GLM_RESET_CARD_PROVIDERS = new Set(["glm", "glm-cn", "glmt", "zai"]);
@@ -30,6 +32,15 @@ export function toProviderLimitsCacheEntry(
     : new Date().toISOString()
 ): ProviderLimitsCacheEntry {
   const bankedResetCredits = Number(usage.bankedResetCredits);
+  const openai =
+    isRecord(usage.openai) &&
+    usage.openai.version === 1 &&
+    isRecord(usage.openai.rateLimits) &&
+    Array.isArray(usage.openai.rateLimits.observations) &&
+    isRecord(usage.openai.admin) &&
+    isRecord(usage.openai.creditBalance)
+      ? (usage.openai as unknown as OpenAIUsageReport)
+      : undefined;
   return {
     quotas: isRecord(usage.quotas) ? usage.quotas : null,
     ...(isRecord(usage.modelQuotas) ? { modelQuotas: usage.modelQuotas } : {}),
@@ -40,6 +51,7 @@ export function toProviderLimitsCacheEntry(
     bankedResetCredits: Number.isFinite(bankedResetCredits) ? bankedResetCredits : undefined,
     paidCredits: parseCodexPaidCredits(usage.paidCredits),
     billing: sanitizeProviderBillingStatus(usage.billing),
+    ...(openai ? { openai } : {}),
     quotaGroups: Array.isArray(usage.quotaGroups)
       ? (usage.quotaGroups as Array<Record<string, unknown>>)
       : undefined,
@@ -52,6 +64,26 @@ export function mergeProviderLimitsCacheEntry(
   previous: ProviderLimitsCacheEntry | null | undefined
 ): ProviderLimitsCacheEntry {
   if (!previous) return next;
+
+  // After restart there may be no in-process response observation yet. Retain
+  // only the previous passive snapshot, explicitly stale; Admin data belongs
+  // to the newly selected credential/scope/period and must never cross over.
+  if (
+    provider === "openai" &&
+    next.openai &&
+    next.openai.rateLimits.observations.length === 0 &&
+    previous.openai?.rateLimits.observations.length
+  ) {
+    return {
+      ...next,
+      openai: {
+        ...next.openai,
+        rateLimits: ageOpenAIRateLimitObservations(previous.openai.rateLimits, {
+          forceStale: true,
+        }),
+      },
+    };
+  }
 
   if (!next.quotas && next.message && hasUsableCachedData(previous)) {
     return previous;

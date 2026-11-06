@@ -3,6 +3,7 @@ import { getApiKeys } from "@/lib/db/apiKeys";
 import { getCombos } from "@/lib/db/combos";
 import { getModelAliases } from "@/lib/db/models";
 import { getProviderConnections } from "@/lib/db/providers";
+import { omitOpenAIAdminCredential } from "@/lib/db/providers/providerSpecificDataSecrets";
 import { getCachedProviderNodes } from "@/lib/db/readCache";
 import { getSettings } from "@/lib/db/settings";
 import { getReasoningRoutingRules } from "@/lib/db/reasoningRoutingRules";
@@ -63,7 +64,7 @@ function pickDefined(record: JsonRecord, keys: string[]) {
 }
 
 function sanitizeProviderConnectionForSync(connection: unknown): JsonRecord {
-  const record = asRecord(connection);
+  const record = omitOpenAIAdminCredential(asRecord(connection));
   return pickDefined(record, [
     "id",
     "provider",
@@ -239,7 +240,7 @@ export async function buildConfigSyncEnvelope() {
 
 export function toLegacyCloudSyncPayload(bundle: ConfigSyncBundle) {
   return {
-    providers: bundle.providerConnections,
+    providers: bundle.providerConnections.map(omitOpenAIAdminCredential),
     providerNodes: bundle.providerNodes,
     modelAliases: bundle.modelAliases,
     combos: bundle.combos,

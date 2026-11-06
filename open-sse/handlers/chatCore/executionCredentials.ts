@@ -128,6 +128,10 @@ export function resolveExecutionCredentials(opts: {
       ? { ...nextCredentials.providerSpecificData }
       : {};
 
+  // Administrative reporting credentials must never enter an inference executor,
+  // including connections that override the upstream URL.
+  delete providerSpecificData.openaiAdminApiKey;
+
   // Some providers (Azure AI Foundry, OCI OpenAI-compatible) choose upstream
   // endpoint path from providerSpecificData.apiType. When a model routes to
   // OpenAI Responses format, force apiType=responses unless explicitly set.

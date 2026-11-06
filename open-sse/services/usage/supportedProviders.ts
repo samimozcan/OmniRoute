@@ -24,6 +24,7 @@ export const USAGE_SUPPORTED_PROVIDERS: readonly string[] = [
   "kiro",
   "amazon-q",
   "github",
+  "openai",
   "codex",
   "claude",
   "anthropic",

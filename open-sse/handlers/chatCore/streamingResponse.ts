@@ -353,14 +353,18 @@ export async function runStreamingResponse(deps: StreamingDeps) {
       providerUrl,
       stage: "provider_response_started",
     });
-    // Update rate limiter from response headers (learn limits dynamically)
-    updateFromHeaders(
-      provider,
-      responseConnectionId,
-      providerResponse.headers,
-      providerResponse.status,
-      model
-    );
+    // Native OpenAI was already observed by the shared execution pipeline with
+    // its actual wire model. Avoid attributing the same headers to the original
+    // requested model again after a fallback.
+    if (provider !== "openai") {
+      updateFromHeaders(
+        provider,
+        responseConnectionId,
+        providerResponse.headers,
+        providerResponse.status,
+        model
+      );
+    }
 
     // Store rate-limit headers for quota saturation signals
     try {

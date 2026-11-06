@@ -926,6 +926,7 @@ export default function ProviderDetailPageClient() {
         setShowEditModal={setShowEditModal}
         selectedConnection={selectedConnection}
         handleUpdateConnection={handleUpdateConnection}
+        onReportingUpdated={handleRefreshQuota}
         handleCompatibleImportWithProgress={handleCompatibleImportWithProgress}
         showEditNodeModal={showEditNodeModal}
         setShowEditNodeModal={setShowEditNodeModal}

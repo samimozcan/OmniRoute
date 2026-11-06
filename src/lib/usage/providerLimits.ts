@@ -783,7 +783,7 @@ async function fetchLiveProviderLimitsWithOptions(
       )) as JsonRecord,
       await refreshLiveModelIds(connection.provider)
     );
-    if (isRecord(usage.quotas)) {
+    if (connection.provider !== "openai" && isRecord(usage.quotas)) {
       setQuotaCache(
         connectionId,
         connection.provider,
@@ -913,7 +913,7 @@ async function fetchLiveProviderLimitsWithOptions(
     );
     if (data) connection = { ...connection, providerSpecificData: data };
   }
-  if (isRecord(result.usage.quotas)) {
+  if (connection.provider !== "openai" && isRecord(result.usage.quotas)) {
     setQuotaCache(
       connectionId,
       connection.provider,
@@ -972,6 +972,7 @@ export async function fetchAndPersistProviderLimits(
   const mergedUsage: JsonRecord = {
     ...usage,
     ...(cache.billing ? { billing: cache.billing } : {}),
+    ...(cache.openai ? { openai: cache.openai } : {}),
   };
   setProviderLimitsCache(connectionId, cache);
   return { connection, usage: mergedUsage, cache };

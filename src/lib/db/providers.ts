@@ -7,7 +7,11 @@ import { v4 as uuidv4 } from "uuid";
 import { isCommonChatGptWebRetiredProviderId } from "@/shared/constants/chatgptWebRetirement";
 import { getDbInstance, rowToCamel, cleanNulls } from "./core";
 import { backupDbFile } from "./backup";
-import { encryptConnectionFields, decryptConnectionFields } from "./encryption";
+import {
+  encryptConnectionFields,
+  decryptConnectionFields,
+  assertOpenAIAdminKeyStorageReady,
+} from "./encryption";
 import { createLazyRowProxy } from "./providers/lazyConnectionView";
 import { invalidateDbCache, getCachedRawProviderConnections } from "./readCache";
 import { invalidateConnectionUpdate, type UpdateOpts } from "./readCache";
@@ -467,6 +471,7 @@ function findExistingCookieConnection(
 }
 
 export async function createProviderConnection(data: JsonRecord) {
+  assertOpenAIAdminKeyStorageReady(data.providerSpecificData);
   await assertApiKeyIsNotManagementPassword(data.apiKey);
   const db = getDbInstance() as unknown as DbLike;
   const now = new Date().toISOString();
@@ -985,6 +990,9 @@ export async function updateProviderConnection(
   await assertApiKeyIsNotManagementPassword(data.apiKey);
 
   const existingCamel = toRecord(rowToCamel(existing));
+  const incomingAdminKey = toRecord(data.providerSpecificData).openaiAdminApiKey;
+  const storedAdminKey = toRecord(existingCamel.providerSpecificData).openaiAdminApiKey;
+  assertOpenAIAdminKeyStorageReady(data.providerSpecificData, incomingAdminKey === storedAdminKey);
   const merged: JsonRecord = {
     ...existingCamel,
     ...data,

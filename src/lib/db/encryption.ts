@@ -215,6 +215,22 @@ export function looksEncrypted(value: unknown): boolean {
   return typeof value === "string" && value.startsWith(PREFIX);
 }
 
+/** Admin reporting credentials must never use the ordinary plaintext fallback. */
+export function assertOpenAIAdminKeyStorageReady(
+  providerSpecificData: unknown,
+  allowStoredEnvelope = false
+): void {
+  if (!providerSpecificData || typeof providerSpecificData !== "object") return;
+  const value = (providerSpecificData as Record<string, unknown>).openaiAdminApiKey;
+  if (value === undefined || value === null || value === "") return;
+  if (typeof value !== "string") throw new Error("OpenAI Admin API key must be a string");
+  if (allowStoredEnvelope && looksEncrypted(value)) return;
+  if (looksEncrypted(value)) throw new Error("Enter a plaintext OpenAI Admin API key");
+  if (!isEncryptionEnabled()) {
+    throw new Error("Set STORAGE_ENCRYPTION_KEY before storing an OpenAI Admin API key");
+  }
+}
+
 /**
  * Encrypt a plaintext string using the STATIC salt key.
  * If encryption is not configured, returns plaintext unchanged.
@@ -365,8 +381,9 @@ export function decryptQuiet(
  * to migrate tokens automatically.
  */
 export function encryptConnectionFields<T extends ConnectionFields | null | undefined>(conn: T): T {
-  if (!isEncryptionEnabled()) return conn;
   if (!conn) return conn;
+  assertOpenAIAdminKeyStorageReady(conn.providerSpecificData, true);
+  if (!isEncryptionEnabled()) return conn;
 
   if (conn.apiKey) conn.apiKey = encrypt(conn.apiKey);
   if (conn.accessToken) conn.accessToken = encrypt(conn.accessToken);
@@ -375,7 +392,13 @@ export function encryptConnectionFields<T extends ConnectionFields | null | unde
   if (conn.providerSpecificData) {
     conn.providerSpecificData = mapProviderSpecificDataSecrets(
       conn.providerSpecificData,
-      (value) => encrypt(value)
+      (value, field) => {
+        const encrypted = encrypt(value);
+        if (field === "openaiAdminApiKey" && !looksEncrypted(encrypted)) {
+          throw new Error("OpenAI Admin API key encryption failed; check STORAGE_ENCRYPTION_KEY");
+        }
+        return encrypted;
+      }
     );
   }
   return conn;
@@ -403,7 +426,8 @@ export function decryptConnectionFields<T extends ConnectionFields | null | unde
     row.providerSpecificData,
     (value, field) => {
       const plaintext = decrypt(value, { quiet: true });
-      if (looksEncrypted(value) && plaintext === null) {
+      // A broken optional reporting credential must not disable working inference.
+      if (field !== "openaiAdminApiKey" && looksEncrypted(value) && plaintext === null) {
         failedNested.push({ field: `providerSpecificData.${field}`, value });
       }
       return plaintext;

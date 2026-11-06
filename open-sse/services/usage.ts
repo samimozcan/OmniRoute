@@ -43,6 +43,7 @@ import {
 import { getCursorUsage } from "./usage/cursor.ts";
 import { getKimiUsage } from "./usage/kimi.ts";
 import { getCodexUsage } from "./usage/codex.ts";
+import { getOpenAIUsage } from "./usage/openai.ts";
 import { throttleQuotaFetch } from "./quotaFetchThrottle.ts";
 import { getClaudeUsage, getClaudePlanLabel } from "./usage/claude.ts";
 import { getKiroUsage, buildKiroUsageResult, discoverKiroProfileArn } from "./usage/kiro.ts";
@@ -149,6 +150,8 @@ export async function getUsageForProvider(
   }
 
   switch (provider) {
+    case "openai":
+      return await getOpenAIUsage(connection, options);
     case "github":
       return await getGitHubUsage(accessToken, providerSpecificData, id || "");
     case "antigravity":

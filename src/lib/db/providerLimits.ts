@@ -4,6 +4,11 @@ import {
 } from "@/shared/utils/providerBilling";
 import { getDbInstance, isBuildPhase, isCloud } from "./core";
 import { parseCodexPaidCredits, type CodexPaidCredits } from "@/lib/providers/codexPaidCredits";
+import type { OpenAIUsageReport } from "@omniroute/open-sse/services/usage/openaiTypes.ts";
+import {
+  ageOpenAIRateLimitObservations,
+  getOpenAIRateLimitObservations,
+} from "@omniroute/open-sse/services/usage/openaiRateLimits.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -34,6 +39,7 @@ export interface ProviderLimitsCacheEntry {
   paidCredits?: CodexPaidCredits;
   billing?: ProviderBillingStatus;
   quotaGroups?: Array<Record<string, unknown>>;
+  openai?: OpenAIUsageReport;
 }
 
 const PROVIDER_LIMITS_CACHE_NAMESPACE = "providerLimitsCache";
@@ -56,7 +62,47 @@ function sanitizeCacheEntryForStorage(entry: ProviderLimitsCacheEntry): Provider
   return billing ? { ...rest, billing } : rest;
 }
 
-function normalizeCacheEntry(value: unknown): ProviderLimitsCacheEntry | null {
+function normalizeOpenAIReport(
+  value: unknown,
+  connectionId: string
+): OpenAIUsageReport | undefined {
+  const report = toRecord(value);
+  const rateLimits = toRecord(report?.rateLimits);
+  if (
+    report?.version !== 1 ||
+    !rateLimits ||
+    !Array.isArray(rateLimits.observations) ||
+    !toRecord(report.admin) ||
+    !toRecord(report.creditBalance)
+  )
+    return undefined;
+  for (const candidate of rateLimits.observations) {
+    const observation = toRecord(candidate);
+    if (!observation || typeof observation.observedAt !== "string") return undefined;
+    for (const name of ["requests", "tokens", "projectTokens"]) {
+      const window = observation[name];
+      if (
+        window !== null &&
+        (!toRecord(window) || typeof (window as JsonRecord).observedAt !== "string")
+      )
+        return undefined;
+    }
+  }
+  const parsed = report as unknown as OpenAIUsageReport;
+  const live = getOpenAIRateLimitObservations({ connectionId });
+  return {
+    ...parsed,
+    rateLimits:
+      live.status === "observed"
+        ? live
+        : ageOpenAIRateLimitObservations(parsed.rateLimits, { forceStale: true }),
+  };
+}
+
+function normalizeCacheEntry(
+  value: unknown,
+  connectionId: string
+): ProviderLimitsCacheEntry | null {
   const record = toRecord(value);
   if (!record) return null;
 
@@ -68,6 +114,7 @@ function normalizeCacheEntry(value: unknown): ProviderLimitsCacheEntry | null {
   const paidCredits = parseCodexPaidCredits(record.paidCredits);
   const billing = sanitizeProviderBillingStatus(record.billing);
   const modelQuotas = toRecord(record.modelQuotas);
+  const openai = normalizeOpenAIReport(record.openai, connectionId);
 
   return {
     quotas: toRecord(record.quotas),
@@ -79,6 +126,7 @@ function normalizeCacheEntry(value: unknown): ProviderLimitsCacheEntry | null {
     ...(Number.isFinite(bankedResetCredits) ? { bankedResetCredits } : {}),
     ...(paidCredits ? { paidCredits } : {}),
     ...(billing ? { billing } : {}),
+    ...(openai ? { openai } : {}),
     ...(Array.isArray(record.quotaGroups)
       ? { quotaGroups: record.quotaGroups as Array<Record<string, unknown>> }
       : {}),
@@ -92,7 +140,7 @@ export function getProviderLimitsCache(connectionId: string): ProviderLimitsCach
     .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
     .get(PROVIDER_LIMITS_CACHE_NAMESPACE, connectionId) as KeyValueRow | undefined;
   if (!row?.value) return null;
-  return normalizeCacheEntry(parseJson(row.value));
+  return normalizeCacheEntry(parseJson(row.value), connectionId);
 }
 
 export function getAllProviderLimitsCache(): Record<string, ProviderLimitsCacheEntry> {
@@ -104,7 +152,7 @@ export function getAllProviderLimitsCache(): Record<string, ProviderLimitsCacheE
 
   const result: Record<string, ProviderLimitsCacheEntry> = {};
   for (const row of rows) {
-    const parsed = normalizeCacheEntry(parseJson(row.value));
+    const parsed = normalizeCacheEntry(parseJson(row.value), row.key);
     if (parsed) {
       result[row.key] = parsed;
     }

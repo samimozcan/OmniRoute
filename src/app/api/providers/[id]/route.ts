@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { hasOpenAIReportingFields } from "@/shared/validation/openaiReporting";
+import { deleteProviderLimitsCache } from "@/lib/db/providerLimits";
 import { getAuditRequestContext, logAuditEvent } from "@/lib/compliance/index";
 import {
   getProviderAuditTarget,
@@ -141,6 +143,11 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: { ...validation.error, rejected } }, { status: 400 });
     }
     const body = validation.data;
+    const reportingChanged = hasOpenAIReportingFields(body.providerSpecificData);
+    if (reportingChanged) {
+      const reportingAuthError = await requireManagementAuth(request, { alwaysRequireAuth: true });
+      if (reportingAuthError) return reportingAuthError;
+    }
     const {
       name,
       priority,
@@ -428,6 +435,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     }
 
     // Hide sensitive fields
+    if (reportingChanged) deleteProviderLimitsCache(id);
     const result: Record<string, any> = { ...updated };
     delete result.apiKey;
     delete result.accessToken;

@@ -1,5 +1,5 @@
 import { getDbInstance } from "../core";
-import { encryptConnectionFields } from "../encryption";
+import { encryptConnectionFields, assertOpenAIAdminKeyStorageReady } from "../encryption";
 import { invalidateDbCache } from "../readCache";
 import { parseProviderSpecificData } from "../webSessionDedup";
 
@@ -25,6 +25,7 @@ export async function mergeConnectionProviderSpecificData(
   id: string,
   patch: Record<string, unknown>
 ): Promise<void> {
+  assertOpenAIAdminKeyStorageReady(patch);
   const db = getDbInstance() as unknown as DbLike;
   // Transaction so a concurrent merge cannot lose a key: the SELECT and
   // UPDATE must observe the same row version (codex account-state precedent).
