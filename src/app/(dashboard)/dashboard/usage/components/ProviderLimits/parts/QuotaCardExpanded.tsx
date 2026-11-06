@@ -30,6 +30,8 @@ import KiloPassMeter from "./KiloPassMeter";
 import QuotaCardSpeed from "./QuotaCardSpeed";
 import { hasCodexPaidCredits, type CodexPaidCredits } from "@/lib/providers/codexPaidCredits";
 import AntigravityQuotaGroups, { resolveAntigravityQuotaGroups } from "../AntigravityQuotaGroups";
+import type { OpenAIUsageReport } from "@omniroute/open-sse/services/usage/openaiTypes";
+import OpenAIQuotaReport from "../../../../providers/[id]/components/OpenAIQuotaReport";
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: "$",
@@ -139,6 +141,7 @@ export function shouldShowLoadingPlaceholder(
 
 interface Props {
   quotas: any[];
+  openai?: OpenAIUsageReport;
   quotaGroups?: Array<Record<string, unknown>>;
   providerId?: string;
   loading: boolean;
@@ -328,6 +331,7 @@ function QuotaDetailRow({
 
 export default function QuotaCardExpanded({
   quotas,
+  openai,
   quotaGroups = [],
   providerId,
   loading,
@@ -385,6 +389,27 @@ export default function QuotaCardExpanded({
         hour12: false,
       })
     : null;
+
+  if (providerId === "openai" && openai) {
+    return (
+      <div className="space-y-2 border-t border-border bg-bg-subtle/30 px-3 py-2.5">
+        {error && (
+          <p role="alert" className="text-xs text-red-500">
+            {error}
+          </p>
+        )}
+        <OpenAIQuotaReport report={openai} />
+        <button
+          type="button"
+          disabled={loading}
+          onClick={onRefresh}
+          className="rounded border border-border px-2 py-1 text-xs text-text-muted disabled:opacity-50"
+        >
+          {loading ? t("refreshing") : tr("forceRefresh", "Refresh now")}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="border-t border-border bg-bg-subtle/30 px-3 py-2.5 flex flex-col gap-1.5">

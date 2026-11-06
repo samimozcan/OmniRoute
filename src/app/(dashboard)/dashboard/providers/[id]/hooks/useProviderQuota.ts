@@ -19,6 +19,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import type { OpenAIUsageReport } from "@omniroute/open-sse/services/usage/openaiTypes";
 
 export interface ProviderQuotaCacheEntry {
   quotas?: Record<string, unknown> | null;
@@ -28,6 +29,7 @@ export interface ProviderQuotaCacheEntry {
   fetchedAt?: string;
   source?: string | null;
   bankedResetCredits?: number;
+  openai?: OpenAIUsageReport;
 }
 
 export function useProviderQuota() {

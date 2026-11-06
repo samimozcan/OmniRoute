@@ -75,6 +75,7 @@ import ProviderTierField from "./ProviderTierField";
 import AgentrouterConsoleFields from "./AgentrouterConsoleFields";
 import { getVertexCredentialCopy } from "./vertexCredentialCopy";
 import QuotaScrapingFields, { EMPTY_QUOTA_SCRAPING_FIELDS } from "./QuotaScrapingFields";
+import OpenAIReportingFields from "./OpenAIReportingFields";
 import GlmTeamQuotaFields, { EMPTY_GLM_TEAM_QUOTA_FIELDS } from "./GlmTeamQuotaFields";
 import ProviderRegionField, { getProviderRegionConfig } from "./AlibabaProviderRegionField";
 import PeakHourProtectionEditor, {
@@ -106,6 +107,7 @@ export interface EditConnectionModalProps {
   onSave: (data: unknown) => Promise<void | unknown>;
   /** Triggered after a successful save when the "import only free models" flag changed. */
   onResyncModels?: (connectionId: string) => void | Promise<void>;
+  onReportingUpdated?: (connectionId: string) => void;
   onClose: () => void;
 }
 const stringField = (value: unknown) => (typeof value === "string" ? value : "");
@@ -116,6 +118,7 @@ export default function EditConnectionModal({
   providerWebsite,
   onSave,
   onResyncModels,
+  onReportingUpdated,
   onClose,
 }: EditConnectionModalProps) {
   const t = useTranslations("providers");
@@ -755,6 +758,15 @@ export default function EditConnectionModal({
         updates.providerSpecificData.importFreeModelsOnly = formData.importFreeModelsOnly === true;
       }
       testModel.applyTo(updates.providerSpecificData);
+      // The independent reporting editor can save while this modal still holds
+      // the original connection snapshot. Never echo that snapshot over newer
+      // reporting choices, and never route its Admin credential through this form.
+      if (updates.providerSpecificData) {
+        delete updates.providerSpecificData.openaiAdminApiKey;
+        delete updates.providerSpecificData.openaiReportingProjectId;
+        delete updates.providerSpecificData.openaiReportingApiKeyId;
+        delete updates.providerSpecificData.openaiReportingPeriod;
+      }
       const error = (await onSave(updates)) as void | unknown;
       if (error) {
         setSaveError(typeof error === "string" ? error : t("failedSaveConnection"));
@@ -886,6 +898,13 @@ export default function EditConnectionModal({
             </p>
           )}
         </div>
+        {isOpen && provider === "openai" && connection.id && (
+          <OpenAIReportingFields
+            key={`openai-reporting-${connection.id}`}
+            connectionId={connection.id}
+            onUpdated={onReportingUpdated}
+          />
+        )}
         <QuotaScrapingFields
           provider={provider}
           values={formData}

@@ -23,6 +23,7 @@ import {
 import { getBarColor, formatCountdown } from "../../../usage/components/ProviderLimits/utils";
 import type { ProviderQuotaCacheEntry } from "../hooks/useProviderQuota";
 import type { ConnectionRowConnection } from "./ConnectionRow";
+import OpenAIQuotaReport from "./OpenAIQuotaReport";
 
 export interface ConnectionQuotaPanelProps {
   providerId: string;
@@ -191,6 +192,15 @@ export default function ConnectionQuotaPanel({
   ) : null;
 
   // No cached data at all — offer the first fetch inline instead of an empty strip.
+  if (providerKey === "openai" && cache?.openai) {
+    return (
+      <div className="mt-2">
+        <div className="flex justify-end">{refreshControl}</div>
+        <OpenAIQuotaReport report={cache.openai} />
+      </div>
+    );
+  }
+
   if (!cache) {
     return (
       <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">

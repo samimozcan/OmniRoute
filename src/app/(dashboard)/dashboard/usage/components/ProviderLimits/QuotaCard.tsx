@@ -22,6 +22,7 @@ import QuotaCardHeader from "./parts/QuotaCardHeader";
 import QuotaCardExpanded from "./parts/QuotaCardExpanded";
 import ProviderUsdCostModal from "./ProviderUsdCostModal";
 import type { CodexPaidCredits } from "@/lib/providers/codexPaidCredits";
+import type { OpenAIUsageReport } from "@omniroute/open-sse/services/usage/openaiTypes";
 
 const STATUS_BORDER: Record<CardStatus, string> = {
   critical: "#ef4444",
@@ -41,6 +42,7 @@ interface QuotaCardProps {
         message?: string | null;
         billing?: ProviderBillingStatus | null;
         raw?: {
+          openai?: OpenAIUsageReport;
           billing?: ProviderBillingStatus | null;
           quotaGroups?: Array<Record<string, unknown>>;
           paidCredits?: CodexPaidCredits;
@@ -162,6 +164,7 @@ export default function QuotaCard({
       />
       <QuotaCardExpanded
         quotas={quotas}
+        openai={quota?.raw?.openai}
         quotaGroups={quota?.raw?.quotaGroups}
         providerId={connection.provider}
         loading={loading}
