@@ -402,6 +402,16 @@ export function translateRequest(
   // consumed here before any provider translation can see it.
   result = applyReasoningRuleDirective(result);
 
+  // On OpenAI Chat passthrough, thinking is request-level reasoning intent.
+  // Consume it before Claude's turn-level cleanup can drop it on a tool result.
+  if (
+    sourceFormat === FORMATS.OPENAI &&
+    targetFormat === FORMATS.OPENAI &&
+    normalizedProvider === "openai"
+  ) {
+    result = normalizeOpenAIChatReasoning(result);
+  }
+
   // Normalize thinking config: remove if lastMessage is not user
   normalizeThinkingConfig(result);
 
@@ -659,8 +669,8 @@ export function translateRequest(
   // Always normalize to clean OpenAI format when target is OpenAI
   // This handles hybrid requests (e.g., OpenAI messages + Claude tools)
   if (targetFormat === FORMATS.OPENAI) {
-    // #18912: same-format requests also carry router-only effort / Responses
-    // reasoning. Normalize before downstream tools/sampling guards consume them.
+    // #18912: consume any remaining router-only effort/thinking or Responses
+    // reasoning before downstream tools/sampling guards consume them.
     if (normalizedProvider === "openai") {
       result = normalizeOpenAIChatReasoning(result);
     }

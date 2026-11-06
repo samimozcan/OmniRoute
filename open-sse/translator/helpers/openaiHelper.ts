@@ -51,14 +51,16 @@ const CLAUDE_TOOL_CHOICE_REQUIRED = "an" + "y";
 
 /**
  * OpenAI Chat Completions accepts only the flat reasoning_effort carrier.
- * The shared normalizer keeps canonical effort and nested reasoning until the
- * destination is known; consume those fields here without losing explicit intent.
+ * The shared normalizer keeps canonical effort/thinking and nested reasoning until
+ * the destination is known; consume those fields without losing explicit intent.
  * Other OpenAI-compatible providers can have their own nested reasoning contract.
  */
 export function normalizeOpenAIChatReasoning(
   body: Record<string, unknown>
 ): Record<string, unknown> {
-  if (body.effort === undefined && body.reasoning === undefined) return body;
+  if (body.effort === undefined && body.reasoning === undefined && body.thinking === undefined) {
+    return body;
+  }
 
   const next = { ...body };
   const reasoning =
@@ -68,8 +70,34 @@ export function normalizeOpenAIChatReasoning(
   if (next.reasoning_effort === undefined && reasoning?.effort !== undefined) {
     next.reasoning_effort = reasoning.effort;
   }
+  // Native/canonical effort already resolved above wins over a thinking toggle.
+  // Enable-only requests use medium; explicit opt-outs must remain none rather
+  // than falling back to a model's potentially enabled reasoning default.
+  if (next.reasoning_effort === undefined) {
+    const thinking =
+      body.thinking && typeof body.thinking === "object" && !Array.isArray(body.thinking)
+        ? (body.thinking as Record<string, unknown>)
+        : null;
+    if (body.thinking === false || thinking?.type === "disabled") {
+      next.reasoning_effort = "none";
+    } else if (body.thinking === true || thinking?.type === "adaptive") {
+      next.reasoning_effort = "medium";
+    } else if (thinking?.type === "enabled") {
+      const budget = thinking.budget_tokens;
+      if (budget === undefined) {
+        next.reasoning_effort = "medium";
+      } else if (typeof budget === "number" && Number.isFinite(budget) && budget > 0) {
+        // Same positive-budget buckets as the Claude -> OpenAI translator.
+        if (budget <= 1024) next.reasoning_effort = "low";
+        else if (budget <= 10240) next.reasoning_effort = "medium";
+        else if (budget < 131072) next.reasoning_effort = "high";
+        else next.reasoning_effort = "xhigh";
+      }
+    }
+  }
   delete next.effort;
   delete next.reasoning;
+  delete next.thinking;
   return next;
 }
 
