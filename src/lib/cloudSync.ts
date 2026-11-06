@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { isCloudEnabled } from "@/lib/db/settings";
 import { getProviderConnections, updateProviderConnection } from "@/lib/db/providers";
+import { preserveLocalOpenAIReportingMetadata } from "@/lib/db/providers/providerSpecificDataSecrets";
 import { buildConfigSyncEnvelope, toLegacyCloudSyncPayload } from "@/lib/sync/bundle";
 
 const configuredCloudUrl = process.env.CLOUD_URL ?? process.env.NEXT_PUBLIC_CLOUD_URL;
@@ -238,8 +239,10 @@ async function updateLocalTokens(cloudProviders: unknown) {
       if (CLOUD_SYNC_SECRETS_ENABLED) {
         updates.accessToken = cloudProvider.accessToken;
         updates.refreshToken = cloudProvider.refreshToken;
-        updates.providerSpecificData =
-          cloudProvider.providerSpecificData || localProvider.providerSpecificData;
+        updates.providerSpecificData = preserveLocalOpenAIReportingMetadata(
+          asRecord(cloudProvider.providerSpecificData || localProvider.providerSpecificData),
+          asRecord(localProvider.providerSpecificData)
+        );
       }
 
       await updateProviderConnection(localProviderId, updates);

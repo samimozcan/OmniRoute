@@ -74,6 +74,7 @@ import { applyOperatorActivationIntent } from "@/lib/providers/operatorDisable";
 import { getRequestPeerLocality } from "@/shared/utils/apiAuth";
 import { hydrateCompatibleNodeCreation } from "@/lib/providers/compatibleNodeCreation";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
+import { hasOpenAIReportingFields } from "@/shared/validation/openaiReporting";
 
 function projectCodexAccountPoolWithRoutingQuota(
   connection: Parameters<typeof projectCodexAccountPool>[0],
@@ -208,6 +209,10 @@ export async function POST(request: Request) {
     const validation = validateBody(createProviderSchema, body);
     if (isValidationFailure(validation)) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+    if (hasOpenAIReportingFields(validation.data.providerSpecificData)) {
+      const reportingAuthError = await requireManagementAuth(request, { alwaysRequireAuth: true });
+      if (reportingAuthError) return reportingAuthError;
     }
     const {
       provider: requestedProvider,

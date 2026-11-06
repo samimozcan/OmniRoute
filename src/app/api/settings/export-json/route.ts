@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings } from "@/lib/db/settings";
 import { getProviderConnections } from "@/lib/db/providers";
+import { omitOpenAIAdminCredential } from "@/lib/db/providers/providerSpecificDataSecrets";
 import { getCachedProviderNodes } from "@/lib/db/readCache";
 import { getCombos } from "@/lib/db/combos";
 import { getApiKeys } from "@/lib/db/apiKeys";
@@ -70,7 +71,7 @@ export async function GET(request: Request) {
     // Use destructuring (not delete) to avoid mutating a potentially cached object.
     const { password: _pw, requireLogin: _rl, ...safeSettings } = rawSettings;
 
-    const providerConnections = await getProviderConnections();
+    const providerConnections = (await getProviderConnections()).map(omitOpenAIAdminCredential);
     const providerNodes = await getCachedProviderNodes();
     const combosRaw = await getCombos();
     const apiKeys = await getApiKeys();

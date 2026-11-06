@@ -25,6 +25,7 @@ import {
   sanitizeProviderSpecificDataForResponse,
 } from "@/lib/providers/requestDefaults";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
+import { hasOpenAIReportingFields } from "@/shared/validation/openaiReporting";
 import { isManagedProviderConnectionId } from "@/lib/providers/catalog";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { validateProviderApiKey } from "@/lib/providers/validation";
@@ -54,6 +55,10 @@ export async function POST(request: Request) {
   const validation = validateBody(bulkCreateProviderSchema, body);
   if (isValidationFailure(validation)) {
     return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+  if (hasOpenAIReportingFields(validation.data.providerSpecificData)) {
+    const reportingAuthError = await requireManagementAuth(request, { alwaysRequireAuth: true });
+    if (reportingAuthError) return reportingAuthError;
   }
 
   const {

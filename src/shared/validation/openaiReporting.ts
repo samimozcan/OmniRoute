@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+export function hasOpenAIReportingFields(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return [
+    "openaiAdminApiKey",
+    "openaiReportingProjectId",
+    "openaiReportingApiKeyId",
+    "openaiReportingPeriod",
+  ].some((field) => Object.hasOwn(value, field));
+}
+
 const reportingId = z
   .string()
   .trim()

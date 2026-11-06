@@ -14,20 +14,50 @@
  */
 
 import type { SqliteAdapter } from "../adapters/types";
-import { encryptConnectionFields } from "../encryption";
+import { encryptConnectionFields, looksEncrypted } from "../encryption";
+import {
+  omitOpenAIAdminCredential,
+  preserveLocalOpenAIReportingMetadata,
+} from "../providers/providerSpecificDataSecrets";
 import { mapBackupRecordToColumns, selectExistingRow, upsertColumns } from "./columnUpsert";
 
 type JsonRecord = Record<string, unknown>;
+
+function metadataRecord(value: unknown): JsonRecord {
+  if (typeof value === "string") {
+    try {
+      return metadataRecord(JSON.parse(value) as unknown);
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as JsonRecord) }
+    : {};
+}
 
 export function importProviderConnectionRecord(
   db: SqliteAdapter,
   columns: string[],
   conn: JsonRecord
 ) {
-  const record = encryptConnectionFields({ ...conn });
+  const existing = selectExistingRow(db, "provider_connections", conn.id);
+  const local = omitOpenAIAdminCredential(conn);
+  if (local.providerSpecificData !== undefined || local.provider_specific_data !== undefined) {
+    const current = metadataRecord(existing?.provider_specific_data);
+    if (!looksEncrypted(current.openaiAdminApiKey)) delete current.openaiAdminApiKey;
+    const metadata = preserveLocalOpenAIReportingMetadata(
+      metadataRecord(local.providerSpecificData ?? local.provider_specific_data),
+      current
+    );
+    // Normalize both backup representations before encryption. Admin credentials are
+    // never imported; an existing local encrypted credential survives metadata restore.
+    local.providerSpecificData = metadata;
+    delete local.provider_specific_data;
+  }
+  const record = encryptConnectionFields(local);
   if (record.rateLimitOverrides == null) delete record.rateLimitOverrides;
 
-  const existing = selectExistingRow(db, "provider_connections", conn.id);
   const values = mapBackupRecordToColumns(record, columns);
   if (!existing) {
     const now = new Date().toISOString();

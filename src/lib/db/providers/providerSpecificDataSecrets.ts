@@ -132,6 +132,45 @@ export const PROVIDER_SPECIFIC_RESPONSE_ONLY_FIELDS = [
 
 export type ProviderSpecificSecretField = (typeof PROVIDER_SPECIFIC_SECRET_FIELDS)[number];
 
+/** The Admin key is local to this server and must not enter backups or sync payloads. */
+export function omitOpenAIAdminCredential<T extends Record<string, unknown>>(connection: T): T {
+  const safe: Record<string, unknown> = { ...connection };
+  for (const field of ["providerSpecificData", "provider_specific_data"]) {
+    const original = safe[field];
+    let value: unknown = original;
+    if (typeof original === "string") {
+      try {
+        value = JSON.parse(original) as unknown;
+      } catch {
+        continue;
+      }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const metadata = { ...(value as Record<string, unknown>) };
+    delete metadata.openaiAdminApiKey;
+    safe[field] = typeof original === "string" ? JSON.stringify(metadata) : metadata;
+  }
+  return safe as T;
+}
+
+/** Incoming backups/cloud metadata cannot replace this server's reporting configuration. */
+export function preserveLocalOpenAIReportingMetadata(
+  incoming: Record<string, unknown>,
+  local: Record<string, unknown>
+): Record<string, unknown> {
+  const next = { ...incoming };
+  for (const field of [
+    "openaiAdminApiKey",
+    "openaiReportingProjectId",
+    "openaiReportingApiKeyId",
+    "openaiReportingPeriod",
+  ]) {
+    delete next[field];
+    if (local[field] !== undefined) next[field] = local[field];
+  }
+  return next;
+}
+
 type SecretTransform = (
   secret: string,
   field: ProviderSpecificSecretField
