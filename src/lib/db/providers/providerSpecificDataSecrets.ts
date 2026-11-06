@@ -14,6 +14,8 @@
  * tests/unit/provider-specific-data-secrets-drift.test.ts iterates the list.
  */
 export const PROVIDER_SPECIFIC_SECRET_FIELDS = [
+  // Administrative reporting only: never exposed, even when inference keys are revealed.
+  "openaiAdminApiKey",
   "consoleApiKey",
   "alibabaConsoleCookie",
   "alibabaConsoleSecToken",

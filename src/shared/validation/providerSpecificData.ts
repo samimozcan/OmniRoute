@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { openaiReportingMetadataSchema } from "./openaiReporting";
 import {
   OPENROUTER_PRESET_MAX_LENGTH,
   isOpenRouterPresetValue,
@@ -159,6 +160,13 @@ export function validateProviderSpecificData(
   ctx: z.RefinementCtx
 ): void {
   if (!data) return;
+
+  const reporting = openaiReportingMetadataSchema.safeParse(data);
+  if (!reporting.success) {
+    for (const issue of reporting.error.issues) {
+      ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+    }
+  }
 
   const gheUrl = data.gheUrl;
   if (gheUrl !== undefined) {
