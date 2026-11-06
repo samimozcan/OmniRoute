@@ -26,6 +26,7 @@ export const USAGE_FETCHER_PROVIDERS = [
   "agy",
   "claude",
   "anthropic",
+  "openai",
   "codex",
   "cursor",
   "kiro",

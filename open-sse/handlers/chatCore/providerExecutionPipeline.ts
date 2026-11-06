@@ -393,6 +393,21 @@ export async function runProviderExecutionPipeline(
 
     const status = attempt.response.status;
     if (status >= 200 && status < 300) {
+      // The non-streaming path returns directly from this pipeline. Observe
+      // native OpenAI success headers here without touching either body format.
+      if (target.provider === "openai" && currentConnectionId(connection)) {
+        try {
+          state.recordRateLimitHeaders(
+            target.provider,
+            currentConnectionId(connection),
+            attempt.response.headers,
+            status,
+            wire.currentModel
+          );
+        } catch {
+          // Descriptive reporting must never affect the inference response.
+        }
+      }
       return toOutcome(
         attempt,
         wire.currentModel,

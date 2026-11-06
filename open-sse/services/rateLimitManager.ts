@@ -54,6 +54,7 @@ import {
   resolveConnectionTimeoutMs,
 } from "../handlers/chatCore/upstreamTimeouts.ts";
 import { boundedMap } from "../../src/lib/quota/boundedMap.ts";
+import { observeOpenAIRateLimits } from "./usage/openaiRateLimits.ts";
 
 interface LearnedLimitEntry {
   provider: string;
@@ -903,6 +904,10 @@ export async function withRateLimit(
  * @param {string} model - Model name
  */
 export function updateFromHeaders(provider, connectionId, headers, status, model = null) {
+  // Reporting remains available when adaptive request protection is disabled.
+  if (provider === "openai") {
+    observeOpenAIRateLimits({ connectionId, model, headers, status });
+  }
   if (!enabledConnections.has(connectionId)) return;
   if (!headers) return;
 

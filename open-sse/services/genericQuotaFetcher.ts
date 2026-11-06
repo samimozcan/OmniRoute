@@ -432,6 +432,9 @@ export const fetchGenericQuota: QuotaFetcher = async (connectionId, connection) 
   const conn = connection as ConnectionInputs;
   const provider = typeof conn.provider === "string" ? conn.provider.trim() : "";
   if (!provider) return null;
+  // Native OpenAI reports shared response observations and optional Admin data,
+  // neither of which is a per-connection quota for inference admission.
+  if (provider === "openai") return null;
 
   const requestedModel =
     typeof connection.requestedModel === "string" ? connection.requestedModel : undefined;
@@ -535,6 +538,7 @@ export function invalidateQuotaCacheOnStatus(args: {
  */
 export function registerGenericQuotaFetchers(): void {
   for (const provider of USAGE_FETCHER_PROVIDERS) {
+    if (provider === "openai") continue;
     if (getQuotaFetcher(provider)) continue; // bespoke fetcher already registered — leave it alone
     registerQuotaFetcher(provider, fetchGenericQuota);
   }
