@@ -126,7 +126,7 @@ class ReportingError extends Error {
     super(message);
   }
 }
-function failure(error: unknown): OpenAIReportSection<never> {
+function failure<T>(error: unknown): OpenAIReportSection<T> {
   const known =
     error instanceof ReportingError
       ? error
@@ -334,7 +334,8 @@ function summarizeCosts(rows: z.infer<typeof costSchema>[]): OpenAICostSummary {
       );
     totals.set(row.amount.currency, total);
     items.push({
-      ...row.amount,
+      value: row.amount.value,
+      currency: row.amount.currency,
       lineItem: row.line_item ?? null,
       projectId: row.project_id ?? null,
       apiKeyId: row.api_key_id ?? null,
