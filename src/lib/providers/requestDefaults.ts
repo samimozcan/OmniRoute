@@ -9,6 +9,7 @@ import { normalizePeakHourProtection } from "@/lib/providers/peakHourProtection"
 import { normalizeDetectedReasoningControl } from "@/shared/reasoning/reasoningControl";
 import {
   PROVIDER_SPECIFIC_RESPONSE_ONLY_FIELDS,
+  omitRetiredOpenAIReportingMetadata,
   providerSpecificSecretKeysIn,
 } from "@/lib/db/providers/providerSpecificDataSecrets";
 import { maskStoredApiKey } from "@/shared/utils/apiKeyMask";
@@ -189,7 +190,7 @@ export function normalizeProviderSpecificData(
   provider: string | null | undefined,
   value: unknown
 ): JsonRecord | undefined {
-  const record = asRecord(value);
+  const record = asRecord(omitRetiredOpenAIReportingMetadata(value));
   if (Object.keys(record).length === 0) return undefined;
 
   const normalized: JsonRecord = { ...record };
@@ -406,7 +407,7 @@ export function sanitizeProviderSpecificDataForResponse(
   value: unknown,
   options: { revealKeys?: boolean } = {}
 ): JsonRecord | undefined {
-  const record = asRecord(value);
+  const record = asRecord(omitRetiredOpenAIReportingMetadata(value));
   if (Object.keys(record).length === 0) return undefined;
 
   const sanitized: JsonRecord = { ...record };

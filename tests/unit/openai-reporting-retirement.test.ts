@@ -6,6 +6,10 @@ import {
   createLazyRowProxy,
 } from "../../src/lib/db/providers/lazyConnectionView.ts";
 import { decryptConnectionFields, encryptConnectionFields } from "../../src/lib/db/encryption.ts";
+import {
+  normalizeProviderSpecificData,
+  sanitizeProviderSpecificDataForResponse,
+} from "../../src/lib/providers/requestDefaults.ts";
 
 // Synthetic legacy envelope: retirement must discard it without trying to decrypt it.
 const LEGACY_ADMIN = "enc:v1:retired-admin-iv:retired-admin-ciphertext:retired-admin-tag";
@@ -26,12 +30,13 @@ const ACTIVE_METADATA = {
 
 test("metadata materialization discards retired reporting fields without mutating the row", () => {
   const metadata = Object.freeze({ ...RETIRED_METADATA, ...ACTIVE_METADATA });
-  const stored = Object.freeze({
+  // Proxy targets must keep configurable properties; freeze the metadata itself instead.
+  const stored = {
     id: "legacy-openai",
     provider: "openai",
     apiKey: "sk-synthetic-inference",
     providerSpecificData: metadata,
-  });
+  };
 
   for (const view of [createLazyRowProxy(stored), createLazyConnectionView(stored)]) {
     assert.deepEqual(view.providerSpecificData, ACTIVE_METADATA);
@@ -90,6 +95,60 @@ test("unrelated metadata and malformed legacy values keep their existing mapper 
     mapProviderSpecificDataSecrets(array, (s) => s),
     array
   );
+});
+
+test("create normalization and direct responses omit retired metadata", () => {
+  const input = Object.freeze({
+    ...RETIRED_METADATA,
+    baseUrl: "https://api.example.test/v1",
+    projectId: "proj-inference",
+    tags: ["inference"],
+    openaiStoreEnabled: false,
+  });
+  const expected = {
+    baseUrl: "https://api.example.test/v1",
+    projectId: "proj-inference",
+    tags: ["inference"],
+    openaiStoreEnabled: false,
+  };
+  assert.deepEqual(
+    [
+      normalizeProviderSpecificData("openai", input),
+      sanitizeProviderSpecificDataForResponse(input),
+      sanitizeProviderSpecificDataForResponse(input, { revealKeys: true }),
+    ],
+    [expected, expected, expected]
+  );
+  assert.equal(input.openaiAdminApiKey, LEGACY_ADMIN);
+});
+
+test("the existing encryption sweep never rewrites rows just to retire reporting metadata", async (t) => {
+  const previousKey = process.env.STORAGE_ENCRYPTION_KEY;
+  process.env.STORAGE_ENCRYPTION_KEY = "reporting-retirement-synthetic-key";
+  t.mock.method(console, "error", () => {});
+  try {
+    const { ensureProviderSpecificDataSecretsEncrypted } =
+      await import("../../src/lib/db/providers/migrations.ts");
+    const stored = JSON.stringify({ ...RETIRED_METADATA, ...ACTIVE_METADATA });
+    const writes: unknown[][] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        all: () => [{ id: "legacy-openai", provider_specific_data: stored }],
+        get: () => undefined,
+        run: (...args: unknown[]) => {
+          writes.push([sql, ...args]);
+          // Stop a failing regression before the sweep's backup side effects.
+          throw new Error("Unexpected rewrite of an already encrypted legacy row");
+        },
+      }),
+      transaction: <T>(callback: () => T) => callback,
+    };
+    assert.equal(ensureProviderSpecificDataSecretsEncrypted(db), 0);
+    assert.deepEqual(writes, [], "reading an old volume must leave its stored metadata intact");
+  } finally {
+    if (previousKey === undefined) delete process.env.STORAGE_ENCRYPTION_KEY;
+    else process.env.STORAGE_ENCRYPTION_KEY = previousKey;
+  }
 });
 
 for (const encryptionEnabled of [false, true]) {
