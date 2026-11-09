@@ -1357,7 +1357,8 @@
       "noResults": "Sem resultados",
       "navigate": "navegar",
       "open": "abrir",
-      "close": "fechar"
+      "close": "fechar",
+      "mostUsedFirst": "Mais usados primeiro"
     },
     "noResults": "Nenhum resultado",
     "costsTeams": "Equipes",

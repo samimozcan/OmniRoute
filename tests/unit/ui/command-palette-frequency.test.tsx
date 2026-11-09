@@ -74,13 +74,17 @@ describe("Cmd+K opt-in frequency ordering", () => {
   });
 
   it("persists enabling, preserves groups without history, and ignores searching/browsing", async () => {
-    const { input, unmount } = await openPalette();
+    const { unmount } = await openPalette();
     const original = labels();
     fireEvent.click(screen.getByRole("switch", { name: preferenceName }));
     expect(saved()).toEqual({ version: 1, mostUsedFirst: true, counts: {} });
     expect(labels()).toEqual(original);
     expect(document.querySelector("[data-slot=command-group]")).not.toBeNull();
+    const input = screen.getByRole("combobox");
     fireEvent.change(input, { target: { value: "providers" } });
+    expect((input as HTMLInputElement).value).toBe("providers");
+    expect(labels()).toContain("Providers");
+    expect(labels()).not.toContain("Home");
     fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.pointerMove(screen.getAllByRole("option")[0]);
     fireEvent.keyDown(input, { key: "Escape" });
@@ -136,13 +140,15 @@ describe("Cmd+K opt-in frequency ordering", () => {
 
   it("keeps option IDs bound to the same commands when toggling ordering", async () => {
     seed({ providers: 20 }, false);
-    const { input } = await openPalette();
+    await openPalette();
     const row = screen
       .getAllByRole("option")
       .find((option) => option.querySelector(".ci-command__label")?.textContent === "Providers")!;
     const id = row.id;
     fireEvent.click(screen.getByRole("switch", { name: preferenceName }));
     const first = screen.getAllByRole("option")[0];
+    // Switching modes remounts the kit Command so its active option follows the new order.
+    const input = screen.getByRole("combobox");
     expect(first.querySelector(".ci-command__label")?.textContent).toBe("Providers");
     expect(first.id).toBe(id);
     expect(input.getAttribute("aria-activedescendant")).toBe(first.id);

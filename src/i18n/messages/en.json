@@ -1434,7 +1434,8 @@
       "noResults": "No results",
       "navigate": "navigate",
       "open": "open",
-      "close": "close"
+      "close": "close",
+      "mostUsedFirst": "Most used first"
     },
     "noResults": "No results",
     "costsTeams": "Teams",
