@@ -122,17 +122,32 @@ describe("Cmd+K opt-in frequency ordering", () => {
     ]);
   });
 
-  it("ranks exact/prefix matches before frequent weaker matches, and frequency breaks search ties", async () => {
-    seed({ "model-catalog": 999, "costs-quota-share": 1, providers: 2, quota: 9 });
+  it.each(["quo", "quota", "  QuO  "])(
+    "keeps the most-used matching command first for %s and opens it with Enter",
+    async (query) => {
+      seed({ home: 999, "costs-quota-share": 1, quota: 9 });
+      const { input } = await openPalette();
+      expect(labels().slice(0, 3)).toEqual(["Home", "Provider Quota", "Quota Sharing"]);
+      fireEvent.change(input, { target: { value: query } });
+      expect(labels()).toEqual(["Provider Quota", "Quota Sharing"]);
+      expect(input.getAttribute("aria-activedescendant")).toBe(screen.getAllByRole("option")[0].id);
+      fireEvent.change(input, { target: { value: "" } });
+      expect(labels().slice(0, 3)).toEqual(["Home", "Provider Quota", "Quota Sharing"]);
+      fireEvent.change(input, { target: { value: query } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(push).toHaveBeenCalledWith("/dashboard/quota");
+      expect(saved()?.counts).toEqual({ home: 999, quota: 10, "costs-quota-share": 1 });
+    }
+  );
+
+  it("uses match quality to break equal usage counts and still filters nonmatches", async () => {
+    seed({ home: 999, "model-catalog": 4, providers: 4, "costs-quota-share": 9, quota: 9 });
     const { input } = await openPalette();
     fireEvent.change(input, { target: { value: "Providers" } });
     expect(labels()[0]).toBe("Providers");
     expect(labels()).toContain("Models & Combos");
-    fireEvent.change(input, { target: { value: "provider" } });
-    expect(labels().slice(0, 2)).toEqual(["Provider Quota", "Providers"]);
     fireEvent.change(input, { target: { value: "quota" } });
-    expect(labels()[0]).toBe("Quota Sharing");
-    expect(labels().indexOf("Quota Sharing")).toBeLessThan(labels().indexOf("Provider Quota"));
+    expect(labels()).toEqual(["Quota Sharing", "Provider Quota"]);
     fireEvent.change(input, { target: { value: "zzz-no-match" } });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByRole("status").textContent).toBe("No results");

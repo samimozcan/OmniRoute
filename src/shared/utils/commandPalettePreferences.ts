@@ -79,7 +79,7 @@ function fold(text: string) {
   return text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
 }
 
-/** Eligibility remains with the kit filter; usage only breaks ties within match quality. */
+/** Eligibility remains with the kit filter; match quality only breaks ties in usage. */
 export function orderCommandPaletteItems<T extends SearchablePaletteItem>(
   items: readonly T[],
   query: string,
@@ -98,7 +98,7 @@ export function orderCommandPaletteItems<T extends SearchablePaletteItem>(
     .map((item, index) => ({ item, index, rank: rank(item.label) }))
     .sort(
       (a, b) =>
-        a.rank - b.rank || (counts[b.item.id] ?? 0) - (counts[a.item.id] ?? 0) || a.index - b.index
+        (counts[b.item.id] ?? 0) - (counts[a.item.id] ?? 0) || a.rank - b.rank || a.index - b.index
     )
     .map(({ item }) => item);
 }
