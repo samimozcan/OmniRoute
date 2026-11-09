@@ -189,8 +189,41 @@ function mapSecretValue(
   return changed ? next : value;
 }
 
-/** Return a fresh object only if a recognized secret field actually changes. */
-export function mapProviderSpecificDataSecrets(data: unknown, transform: SecretTransform): unknown {
+/** Retired fork reporting settings must not survive connection reads or transfers. */
+export function omitRetiredOpenAIReportingMetadata(data: unknown): unknown {
+  if (typeof data === "string") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data) as unknown;
+    } catch {
+      return data;
+    }
+    const filtered = omitRetiredOpenAIReportingMetadata(parsed);
+    return filtered === parsed ? data : JSON.stringify(filtered);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const original = data as Record<string, unknown>;
+  let updated: Record<string, unknown> | null = null;
+  for (const field of [
+    "openaiAdminApiKey",
+    "openaiReportingProjectId",
+    "openaiReportingApiKeyId",
+    "openaiReportingPeriod",
+  ]) {
+    if (!Object.hasOwn(original, field)) continue;
+    updated ??= { ...original };
+    delete updated[field];
+  }
+  return updated ?? data;
+}
+
+/** Return a fresh object only if retired metadata or a recognized secret changes. */
+export function mapProviderSpecificDataSecrets(
+  data: unknown,
+  transform: SecretTransform,
+  options: { preserveRetiredReportingMetadata?: boolean } = {}
+): unknown {
+  if (!options.preserveRetiredReportingMetadata) data = omitRetiredOpenAIReportingMetadata(data);
   if (!data || typeof data !== "object" || Array.isArray(data)) return data;
   const original = data as Record<string, unknown>;
   let updated: Record<string, unknown> | null = null;

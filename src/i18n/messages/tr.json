@@ -1357,7 +1357,8 @@
       "noResults": "Sonuç yok",
       "navigate": "navigasyon",
       "open": "açık",
-      "close": "kapat"
+      "close": "kapat",
+      "mostUsedFirst": "En çok kullanılanlar önce"
     },
     "noResults": "Sonuç yok",
     "costsTeams": "Ekipler",
