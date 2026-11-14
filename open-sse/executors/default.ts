@@ -280,7 +280,10 @@ export class DefaultExecutor extends BaseExecutor {
             ? (credentials.providerSpecificData.baseUrl as string)
             : null;
         const chatUrl = customBaseUrl ? normalizeOpenAIChatUrl(customBaseUrl) : this.config.baseUrl;
-        if (getModelTargetFormat("openai", model) === "openai-responses") {
+        if (
+          credentials?.providerSpecificData?._omnirouteNativeResourceResponses === true ||
+          getModelTargetFormat("openai", model) === "openai-responses"
+        ) {
           return chatUrl.replace(/\/chat\/completions\/?$/, "/responses");
         }
         return chatUrl;
@@ -663,6 +666,14 @@ export class DefaultExecutor extends BaseExecutor {
 
     if (isCompatibleProvider) {
       applyCustomHeaders(headers, credentials.providerSpecificData?.customHeaders);
+    }
+    if (
+      this.provider === "openai" &&
+      credentials.providerSpecificData?._omnirouteProviderResourceRouting === true
+    ) {
+      // The native selector supplies only OpenAI project/organization context.
+      // Keep the resource upload and subsequent inference in that same project.
+      applyCustomHeaders(headers, credentials.providerSpecificData.customHeaders);
     }
 
     if (clientHeaders) {

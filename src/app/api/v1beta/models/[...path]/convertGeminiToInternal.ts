@@ -52,6 +52,7 @@ interface GeminiTool {
 }
 
 interface GeminiGenerateBody {
+  cachedContent?: string;
   systemInstruction?: { parts?: GeminiPart[] };
   contents?: GeminiContent[];
   tools?: GeminiTool[];
@@ -63,7 +64,9 @@ interface GeminiGenerateBody {
 }
 
 type InternalContentPart =
-  { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { fileData: { fileUri: string; mimeType: string } };
 
 interface InternalMessage {
   role: string;
@@ -82,6 +85,7 @@ interface InternalTool {
 }
 
 export interface InternalChatBody {
+  cachedContent?: string;
   model: string;
   messages: InternalMessage[];
   stream: boolean;
@@ -120,7 +124,7 @@ function convertContent(
     if (part.functionResponse) {
       const fr = part.functionResponse;
       const payload =
-        fr.response && "result" in fr.response ? fr.response.result : fr.response ?? {};
+        fr.response && "result" in fr.response ? fr.response.result : (fr.response ?? {});
       toolMessages.push({
         role: "tool",
         tool_call_id: toolCallIds.responseId(fr),
@@ -150,6 +154,19 @@ function convertContent(
         image_url: { url: `data:${mimeType};base64,${inlineData.data}` },
       });
     }
+    const fileData = (acceptsInlineData ? (part.fileData ?? part.file_data) : undefined) as
+      | { fileUri?: unknown; file_uri?: unknown; mimeType?: unknown; mime_type?: unknown }
+      | undefined;
+    const fileUri = fileData?.fileUri ?? fileData?.file_uri;
+    if (typeof fileUri === "string" && fileUri) {
+      const mime = fileData?.mimeType ?? fileData?.mime_type;
+      contentParts.push({
+        fileData: {
+          fileUri,
+          mimeType: typeof mime === "string" && mime ? mime : "application/octet-stream",
+        },
+      });
+    }
     if (part.functionCall) {
       toolCalls.push({
         id: toolCallIds.callId(part.functionCall),
@@ -163,7 +180,9 @@ function convertContent(
   }
 
   const text = textSegments.join("\n");
-  const hasInlineData = contentParts.some((part) => part.type === "image_url");
+  const hasInlineData = contentParts.some(
+    (part) => "fileData" in part || part.type === "image_url"
+  );
 
   if (toolCalls.length > 0) {
     const msg: InternalMessage = { role: "assistant" };
@@ -248,6 +267,7 @@ export function convertGeminiToInternal(
     temperature: geminiBody.generationConfig?.temperature,
     top_p: geminiBody.generationConfig?.topP,
   };
+  if (geminiBody.cachedContent !== undefined) result.cachedContent = geminiBody.cachedContent;
 
   // Convert tool declarations → OpenAI tools.
   if (Array.isArray(geminiBody.tools)) {

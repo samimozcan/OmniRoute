@@ -74,6 +74,7 @@ import {
   stampNativeResponsesPassthroughBody,
   redactPassthroughThinkingSignatures,
   isClaudeCodeSemanticPassthroughRequest,
+  resolveNativeProviderResourceExecutor,
 } from "./chatCore/passthroughHelpers.ts";
 
 import {
@@ -421,6 +422,8 @@ async function handleChatCoreInner({
     defaultThinkingEffort,
   });
   let { provider, model, extendedContext } = modelInfo;
+  const nativeResourceModel =
+    credentials?.providerSpecificData?._omnirouteProviderResourceRouting === true ? model : null;
   const getExecutorClientHeaders = () =>
     buildExecutorClientHeaders(clientRawRequest?.headers, userAgent, { provider, body });
   // Keep the selected rule across format conversion, retries and refreshed credentials.
@@ -583,6 +586,10 @@ async function handleChatCoreInner({
     // (fusion panel + judge share the client's headers) never collide on the raw header key.
     body,
     apiKeyId: apiKeyInfo?.id ?? null,
+    connectionId:
+      credentials?.providerSpecificData?._omnirouteProviderResourceRouting === true
+        ? credentials.connectionId
+        : null,
     effectiveServiceTier,
     startTime,
     log,
@@ -679,7 +686,7 @@ async function handleChatCoreInner({
     headers: clientRawRequest?.headers,
     model,
   });
-  if (bgRedirect) {
+  if (bgRedirect && !nativeResourceModel) {
     const originalModel = model;
     log?.info?.(
       "BACKGROUND",
@@ -712,6 +719,9 @@ async function handleChatCoreInner({
     log
   );
   if (routedLifecycleError) return routedLifecycleError;
+  if (nativeResourceModel && resolvedModel !== nativeResourceModel) {
+    return createErrorResult(400, "Provider resource routing does not support model aliases");
+  }
 
   // Effort-variant model ids: the Claude / Claude-Code model picker (e.g. VS Code's
   // "Effort" slider) advertises claude-...-{low,medium,high,xhigh,max}. Anthropic has
@@ -1079,7 +1089,8 @@ async function handleChatCoreInner({
   body = applyApiKeyCodexServiceMode(provider, body, apiKeyCodexServiceMode);
   effectiveServiceTier = resolveEffectiveServiceTier(body);
   setGeminiThoughtSignatureMode(settings.antigravitySignatureCacheMode);
-  const semanticCacheEnabled = isSemanticCacheEnabled(settings, apiKeyInfo);
+  const semanticCacheEnabled = credentials?.providerSpecificData?._omnirouteProviderResourceRouting !== true &&
+    isSemanticCacheEnabled(settings, apiKeyInfo);
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model, {
     enabled: detailedLoggingEnabled && !videoBridgeObserved,
@@ -2405,7 +2416,8 @@ async function handleChatCoreInner({
     targetFormat,
     isClaudePassthrough,
     credentials,
-    previousResponseIdMode: settings.responsesPreviousResponseIdMode,
+    previousResponseIdMode: credentials?.providerSpecificData?._omnirouteNativeResourceResponses === true
+      ? "preserve" : settings.responsesPreviousResponseIdMode,
     log,
   });
   translatedBody = finalizedRequest.translatedBody;
@@ -2455,7 +2467,9 @@ async function handleChatCoreInner({
 
   // Resolve executor with optional upstream proxy routing. The native / cliproxyapi / dario /
   // fallback modes and the #6339 per-connection override live in chatCore/executorProxy.ts.
-  const resolveExecutorWithProxy = createExecutorResolver(log, credentials, validationExecutorFence);
+  const resolveExecutorWithProxy = nativeResourceModel
+    ? (provider: string) => resolveNativeProviderResourceExecutor(provider, nativeResourceModel, validationExecutorFence)
+    : createExecutorResolver(log, credentials, validationExecutorFence);
 
   // === Quota Share enforcement PRE-hook (B/F7) + G2 combo soft penalty ===
   // Extracted to chatCore/quotaSharePreHook.ts (chatCore slice 2). Fail-open per B16; a block
@@ -2539,7 +2553,10 @@ async function handleChatCoreInner({
   });
 
   const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
-  const dedupEnabled = shouldDeduplicate(dedupRequestBody);
+  // The shared chat hash omits native resource/cache/continuation controls.
+  const dedupEnabled =
+    credentials.providerSpecificData?._omnirouteProviderResourceRouting !== true &&
+    shouldDeduplicate(dedupRequestBody);
   // Namespaced by the calling API key AND the selected provider connection: dedup
   // hands the SAME response object to every joiner, so a shared hash across keys
   // is a cross-principal response leak (GHSA-6c7w-56xp-wpc6), and a shared hash

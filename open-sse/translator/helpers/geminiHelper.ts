@@ -239,6 +239,36 @@ export function convertOpenAIContentToParts(content: unknown): JsonRecord[] {
           }
         }
       } else {
+        // Provider Files references stay remote and retain their actual MIME type.
+        // The app's selected-provider ownership gate authorizes these identifiers.
+        const nativeFile = toRecord(rec.fileData || rec.file_data);
+        const fileReference = toRecord(rec.file);
+        const nativeUri = nativeFile.fileUri || nativeFile.file_uri;
+        const uploadedId = fileReference.file_id;
+        const fileUri =
+          typeof nativeUri === "string"
+            ? nativeUri
+            : typeof uploadedId === "string" &&
+                /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/files\//.test(uploadedId)
+              ? uploadedId
+              : typeof uploadedId === "string" && /^files\//.test(uploadedId)
+                ? `https://generativelanguage.googleapis.com/v1beta/${uploadedId}`
+                : null;
+        if (fileUri) {
+          const mimeType =
+            nativeFile.mimeType ||
+            nativeFile.mime_type ||
+            fileReference.mime_type ||
+            fileReference.mimeType;
+          parts.push({
+            fileData: {
+              fileUri,
+              mimeType:
+                typeof mimeType === "string" && mimeType ? mimeType : "application/octet-stream",
+            },
+          });
+          continue;
+        }
         // 1. Handle Gemini native inline_data injected into OpenAI arrays (e.g. Cherry Studio)
         const geminiInline = toRecord(rec.inline_data || rec.inlineData);
         if (geminiInline?.data) {

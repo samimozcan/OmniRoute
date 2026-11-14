@@ -58,11 +58,18 @@ function stableSerialize(value: unknown): string {
     .join(",")}}`;
 }
 
-function semanticRequestBody(body: unknown, legacyMessages: unknown): Record<string, unknown> {
+function semanticRequestBody(
+  body: unknown,
+  legacyMessages: unknown,
+  nativeResourceRequest: boolean
+): Record<string, unknown> {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { messages: legacyMessages };
   }
   const request = body as Record<string, unknown>;
+  // Native resource requests carry provider cache, storage and continuation
+  // controls outside the shared chat projection; all must distinguish replays.
+  if (nativeResourceRequest) return request;
   return Object.fromEntries(
     IDEMPOTENCY_SEMANTIC_FIELDS.filter((field) => request[field] !== undefined).map((field) => [
       field,
@@ -91,6 +98,7 @@ export function composeIdempotencyKey({
   messages,
   body,
   apiKeyId,
+  connectionId,
 }: {
   rawKey: string | null | undefined;
   provider: string;
@@ -99,18 +107,20 @@ export function composeIdempotencyKey({
   body?: unknown;
   /** The calling API key: keeps one caller's replay from being served to another caller. */
   apiKeyId?: string | null;
+  connectionId?: string | null;
 }): string | null {
   if (!rawKey) return null;
   let digest = "";
   try {
     digest = createHash("sha256")
-      .update(stableSerialize(semanticRequestBody(body, messages)))
+      .update(stableSerialize(semanticRequestBody(body, messages, Boolean(connectionId))))
       .digest("hex")
       .slice(0, 16);
   } catch {
     digest = "nodigest";
   }
-  return `${rawKey}|${apiKeyId ?? ""}|${provider}|${model}|${digest}`;
+  const scope = connectionId ? `|connection:${connectionId}` : "";
+  return `${rawKey}|${apiKeyId ?? ""}|${provider}|${model}|${digest}${scope}`;
 }
 
 /**
@@ -125,6 +135,7 @@ export async function checkIdempotencyCache({
   model,
   body,
   apiKeyId,
+  connectionId,
   effectiveServiceTier,
   startTime,
   log,
@@ -136,6 +147,7 @@ export async function checkIdempotencyCache({
   body?: unknown;
   /** The calling API key, so replays are never shared across callers. */
   apiKeyId?: string | null;
+  connectionId?: string | null;
   effectiveServiceTier: EffectiveServiceTier | null | undefined;
   startTime: number;
   log: LoggerLike;
@@ -153,6 +165,7 @@ export async function checkIdempotencyCache({
     messages: (body as { messages?: unknown } | undefined)?.messages,
     body,
     apiKeyId,
+    connectionId,
   });
   const cachedIdemp = checkIdempotency(idempotencyKey);
   if (cachedIdemp) {

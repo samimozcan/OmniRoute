@@ -196,6 +196,19 @@ export function openAIChunkToGeminiChunk(
  * Non-OK / no-body responses are passed through unchanged so that callers
  * upstream of the route can surface the error to the client untouched.
  */
+function providerResourceSelectionHeaders(response: Response): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const name of [
+    "x-omniroute-provider",
+    "x-omniroute-key-index",
+    "x-omniroute-selected-connection-id",
+  ]) {
+    const value = response.headers.get(name);
+    if (value !== null) headers[name] = value;
+  }
+  return headers;
+}
+
 export function transformOpenAISSEToGeminiSSE(upstreamResponse: Response, model: string): Response {
   if (!upstreamResponse.ok || !upstreamResponse.body) {
     return upstreamResponse;
@@ -275,6 +288,7 @@ export function transformOpenAISSEToGeminiSSE(upstreamResponse: Response, model:
   return new Response(upstreamResponse.body.pipeThrough(transform), {
     status: 200,
     headers: {
+      ...providerResourceSelectionHeaders(upstreamResponse),
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
     },
@@ -327,6 +341,10 @@ export async function convertOpenAIResponseToGemini(
   model: string
 ): Promise<Response> {
   if (!response.ok) return response;
+  const headers = {
+    ...providerResourceSelectionHeaders(response),
+    "Content-Type": "application/json",
+  };
 
   let body: OpenAINonStreamResponse;
   try {
@@ -338,7 +356,7 @@ export async function convertOpenAIResponseToGemini(
       { error: { message: sanitizeErrorMessage(err), code: response.status } },
       {
         status: response.status,
-        headers: { "Content-Type": "application/json" },
+        headers,
       }
     );
   }
@@ -346,7 +364,7 @@ export async function convertOpenAIResponseToGemini(
   // Already Gemini-shape (some upstreams may pre-translate) — pass through.
   if (body.candidates) {
     return Response.json(body, {
-      headers: { "Content-Type": "application/json" },
+      headers,
     });
   }
 
@@ -354,14 +372,14 @@ export async function convertOpenAIResponseToGemini(
   if (body.error) {
     return Response.json(body, {
       status: response.status,
-      headers: { "Content-Type": "application/json" },
+      headers,
     });
   }
 
   const choice = body.choices?.[0];
   if (!choice || !choice.message) {
     return Response.json(body, {
-      headers: { "Content-Type": "application/json" },
+      headers,
     });
   }
 
@@ -406,6 +424,6 @@ export async function convertOpenAIResponseToGemini(
   }
 
   return Response.json(geminiResponse, {
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
 }

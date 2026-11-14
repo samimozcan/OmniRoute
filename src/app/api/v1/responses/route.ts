@@ -83,6 +83,14 @@ export async function withCodexPreferredModel(
     if (!body || typeof body !== "object" || typeof body.model !== "string") {
       return { request, body };
     }
+    // Native resource selection is resolved and authorized by handleChat. Never
+    // rewrite its model to a subscription/OAuth provider before that happens.
+    if (
+      request.headers.has("x-omniroute-provider") ||
+      request.headers.has("x-omniroute-key-index")
+    ) {
+      return { request, body };
+    }
     const { model, changed } = await resolveResponsesApiModel(
       body.model,
       getModelInfo,
