@@ -8,6 +8,7 @@ import {
 } from "@/app/api/v1/_helpers/apiKeyScope";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { buildErrorBody } from "@omniroute/open-sse/utils/error";
+import { tryHandleProviderResourceRequest } from "@/app/api/v1/_helpers/providerResources";
 
 export async function OPTIONS() {
   return handleCorsOptions();
@@ -69,6 +70,8 @@ export function parseFilesListQuery(searchParams: URLSearchParams):
 }
 
 export async function POST(request: Request) {
+  const routed = await tryHandleProviderResourceRequest(request, { kind: "file" });
+  if (routed) return routed;
   const scope = await getApiKeyRequestScope(request);
   if (scope.rejection) return scope.rejection;
 
@@ -164,6 +167,8 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
+  const routed = await tryHandleProviderResourceRequest(request, { kind: "file" });
+  if (routed) return routed;
   const scope = await getApiKeyRequestScope(request);
   if (scope.rejection) return scope.rejection;
 

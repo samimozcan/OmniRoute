@@ -316,6 +316,229 @@ test("authorizes an owned OpenAI reference only on the selected connection", asy
   );
 });
 
+const nativeFileCarriers: Array<{
+  name: string;
+  body: (fileId: string) => Record<string, unknown>;
+}> = [
+  {
+    name: "Responses input images",
+    body: (fileId) => ({
+      input: [
+        { role: "user", content: [{ type: "input_image", detail: "auto", file_id: fileId }] },
+      ],
+    }),
+  },
+  {
+    name: "function call output images",
+    body: (fileId) => ({
+      input: [
+        {
+          type: "function_call_output",
+          call_id: "call-fixture",
+          output: [{ type: "input_image", file_id: fileId }],
+        },
+      ],
+    }),
+  },
+  {
+    name: "custom tool output images",
+    body: (fileId) => ({
+      input: [
+        {
+          type: "custom_tool_call_output",
+          call_id: "call-fixture",
+          output: [{ type: "input_image", file_id: fileId }],
+        },
+      ],
+    }),
+  },
+  {
+    name: "prompt image variables",
+    body: (fileId) => ({
+      prompt: {
+        id: "pmpt-fixture",
+        variables: { image: { type: "input_image", detail: "auto", file_id: fileId } },
+      },
+    }),
+  },
+  {
+    name: "computer tool screenshots",
+    body: (fileId) => ({
+      input: [
+        {
+          type: "computer_call_output",
+          call_id: "call-fixture",
+          output: { type: "computer_screenshot", file_id: fileId },
+        },
+      ],
+    }),
+  },
+  {
+    name: "image generation masks",
+    body: (fileId) => ({
+      tools: [{ type: "image_generation", input_image_mask: { file_id: fileId } }],
+    }),
+  },
+  {
+    name: "code interpreter container files",
+    body: (fileId) => ({
+      tools: [{ type: "code_interpreter", container: { type: "auto", file_ids: [fileId] } }],
+    }),
+  },
+  {
+    name: "shell environment files",
+    body: (fileId) => ({
+      tools: [{ type: "shell", environment: { type: "container_auto", file_ids: [fileId] } }],
+    }),
+  },
+  {
+    name: "discovered tool container files",
+    body: (fileId) => ({
+      input: [
+        {
+          type: "tool_search_output",
+          call_id: "call-fixture",
+          tools: [{ type: "code_interpreter", container: { type: "auto", file_ids: [fileId] } }],
+        },
+      ],
+    }),
+  },
+];
+
+for (const [index, carrier] of nativeFileCarriers.entries()) {
+  test(`${carrier.name} require the exact file owner and selected connection`, async () => {
+    const { assertProviderResourceOwnership } =
+      await import("../../src/sse/services/providerResourceOwnership.ts");
+    const owner = await newKey(`native-carrier-owner-${index}`);
+    const foreign = await newKey(`native-carrier-foreign-${index}`);
+    const fileId = `file-native-carrier-${index}`;
+    await bindFile(fileId, owner.id);
+    const caller = request({ authorization: `Bearer ${owner.key}` });
+
+    await assertProviderResourceOwnership(caller, carrier.body(fileId), routing(), {
+      id: owner.id,
+    });
+    await assert.rejects(
+      assertProviderResourceOwnership(
+        request({ authorization: `Bearer ${foreign.key}` }),
+        carrier.body(fileId),
+        routing(),
+        { id: foreign.id }
+      ),
+      hasStatus(404)
+    );
+    await assert.rejects(
+      assertProviderResourceOwnership(
+        caller,
+        carrier.body(fileId),
+        routing("openai", "unregistered-carrier-connection"),
+        { id: owner.id }
+      ),
+      hasStatus(404)
+    );
+    await assert.rejects(
+      assertProviderResourceOwnership(
+        caller,
+        carrier.body("file-unregistered-carrier"),
+        routing(),
+        {
+          id: owner.id,
+        }
+      ),
+      hasStatus(404)
+    );
+    await assert.rejects(
+      assertProviderResourceOwnership(caller, carrier.body(fileId), routing("gemini"), {
+        id: owner.id,
+      }),
+      hasStatus(400)
+    );
+  });
+}
+
+test("every container file is checked even when the first file is owned", async () => {
+  const { assertProviderResourceOwnership } =
+    await import("../../src/sse/services/providerResourceOwnership.ts");
+  const owner = await newKey("container-array-owner");
+  const foreign = await newKey("container-array-foreign");
+  await bindFile("file-container-owned", owner.id);
+  await bindFile("file-container-foreign", foreign.id);
+  const fileIds = ["file-container-owned", "file-container-owned", "file-container-foreign"];
+  for (const tool of [
+    { type: "code_interpreter", container: { type: "auto", file_ids: fileIds } },
+    { type: "shell", environment: { type: "container_auto", file_ids: fileIds } },
+  ]) {
+    await assert.rejects(
+      assertProviderResourceOwnership(
+        request({ authorization: `Bearer ${owner.key}` }),
+        { tools: [tool] },
+        routing(),
+        { id: owner.id }
+      ),
+      hasStatus(404)
+    );
+  }
+});
+
+test("native file lists reject malformed ids and oversized arrays without skipping entries", async () => {
+  const { collectProviderResourceReferences } =
+    await import("../../src/sse/services/providerResourceOwnership.ts");
+  for (const fileIds of ["file-not-an-array", null, {}, [null], ["file-valid", 42], ["invalid"]]) {
+    for (const tool of [
+      { type: "code_interpreter", container: { type: "auto", file_ids: fileIds } },
+      { type: "shell", environment: { type: "container_auto", file_ids: fileIds } },
+    ]) {
+      assert.throws(() => collectProviderResourceReferences({ tools: [tool] }), hasStatus(400));
+    }
+  }
+  assert.throws(
+    () =>
+      collectProviderResourceReferences({
+        tools: [
+          {
+            type: "code_interpreter",
+            container: { type: "auto", file_ids: Array(20_001).fill("file-repeat") },
+          },
+        ],
+      }),
+    hasStatus(400)
+  );
+});
+
+test("native URL and inline image carriers do not create uploaded-file references", async () => {
+  const { collectProviderResourceReferences } =
+    await import("../../src/sse/services/providerResourceOwnership.ts");
+  assert.deepEqual(
+    collectProviderResourceReferences({
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_image", image_url: "https://example.test/file-photo.png" },
+            { type: "input_image", file_id: null, image_url: "data:image/png;base64,ZmlsZS0=" },
+            { type: "input_file", file_data: "data:application/pdf;base64,ZmlsZS0=" },
+          ],
+        },
+        {
+          type: "computer_call_output",
+          call_id: "call-fixture",
+          output: { type: "computer_screenshot", image_url: "data:image/png;base64,ZmlsZS0=" },
+        },
+      ],
+      tools: [
+        {
+          type: "image_generation",
+          input_image_mask: { image_url: "data:image/png;base64,ZmlsZS0=" },
+        },
+        { type: "code_interpreter", container: { type: "auto" } },
+        { type: "shell", environment: { type: "container_auto", file_ids: [] } },
+      ],
+      metadata: { file_id: "file-text", file_ids: "file-metadata" },
+    }),
+    []
+  );
+});
+
 test("foreign and unknown references produce the same safe not-found failure", async () => {
   const { assertProviderResourceOwnership } =
     await import("../../src/sse/services/providerResourceOwnership.ts");

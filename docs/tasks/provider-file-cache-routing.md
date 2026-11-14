@@ -36,10 +36,10 @@ The owner requested this work on 2026-11-14: first open an OmniRoute fork PR, re
 - [x] Research current official OpenAI Files/Responses/prompt cache and Gemini Files/cachedContents contracts.
 - [x] Read current resource routes, connection ordering, auth/policy, inference routing and fork publication workflow.
 - [x] Commit a concrete design and implementation plan with exact files, contracts, index semantics and tests.
-- [ ] Add failing tests for opt-in selection, default index zero, explicit index, invalid index/provider, disabled credentials, auth and legacy behavior.
-- [ ] Implement deterministic account selection and stable connection identity for follow-up operations.
-- [ ] Implement supported upstream file lifecycle operations and return native identifiers.
-- [ ] Implement supported explicit cache lifecycle and continuation routing.
+- [x] Add failing tests for opt-in selection, default index zero, explicit index, invalid index/provider, disabled credentials, auth and legacy behavior.
+- [x] Implement deterministic account selection and stable connection identity for follow-up operations.
+- [x] Implement supported upstream file lifecycle operations and return native identifiers.
+- [x] Implement supported explicit cache lifecycle and continuation routing.
 - [ ] Verify inference account affinity, unsupported capabilities and error redaction.
 - [ ] Run focused regressions, existing fork tests, formatting/lint, relevant type checks and documentation gates; record baseline issues separately.
 - [ ] Independently review the change and resolve concrete findings.
@@ -51,7 +51,7 @@ The owner requested this work on 2026-11-14: first open an OmniRoute fork PR, re
 
 ## Design decisions to resolve in research
 
-A shared HTTP-header selector is the initial implementation proposal because it works for multipart upload, JSON cache calls, GET/DELETE and inference without injecting router fields into provider payloads. The exact names and supported endpoint mapping are not implemented yet. Determine index ordering from the existing UI/database contract and return a stable connection identifier for reuse if account ordering changes.
+A shared HTTP-header selector is the initial implementation proposal because it works for multipart upload, JSON cache calls, GET/DELETE and inference without injecting router fields into provider payloads. The implemented names and supported endpoint mapping are specified in the committed design and API guide. Determine index ordering from the existing UI/database contract and return a stable connection identifier for reuse if account ordering changes.
 
 OpenAI and Gemini have different cache APIs. Document their actual capabilities independently. Validate native file inputs through the intended inference endpoint; uploading alone does not establish continuation support.
 
@@ -78,3 +78,5 @@ Use synthetic fixtures and mocked provider HTTP for deterministic tests. No prod
 - 2026-11-14: Metadata-only resource registry and owner checks implemented. Native IDs are preserved, binding owner is immutable, metadata omits document contents and credentials. New ownership tests passed 20/20; with existing file/key-scope ownership regressions, 62/62 passed. Added canonical URI validation, Gemini Chat file carriers, and bounded structural reference inspection. Scoped ESLint/Prettier and diff checks passed. Registry and authorization are a separate checkpoint; endpoint/inference integration is still in progress.
 
 - 2026-11-14: Native OpenAI/Gemini file and Gemini cache transport implemented; 21/21 transport tests passed after observed RED/GREEN cycles. Official origins only, selected primary key only, scoped OpenAI project/org headers, bounded multipart/JSON/error reads, 120-second deadline, validated resumable URL, redirect refusal and credential-redacted errors. No live provider calls. Focused route tests passed 9/9, including default/explicit key, legacy local files, owner restart/read/delete/list isolation, alternate key transport and endpoint/connection policy; endpoint code is the next checkpoint.
+
+- 2026-11-14: Public routes now enforce existing authentication/policy, owner-scoped resource metadata, selected transport proxy and CORS. Independent review identified unbounded cache pre-parsing and OpenAI pagination across hidden resources; real-route regressions reproduced the failures before the fixes. Bounded parsing now reads without a tee clone, supports cancellation, and rejects declared/chunked oversized bodies before dispatch. Hidden OpenAI pages are traversed internally with repeat/page/deadline bounds. Root-focused route/selector/transport/legacy-scope run passed 63/63. `npm run check:docs-all` passed after updating the migration count (223) in required translated documentation. Core model-rewrite and additional native file-carrier review fixes are in progress; publication remains gated.

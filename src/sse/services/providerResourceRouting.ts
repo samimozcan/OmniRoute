@@ -183,6 +183,12 @@ export async function resolveProviderRoutingSelection(
     provider: selection.provider,
     authType: "apikey",
   });
+  const validatedConnections = connections.map((connection) => {
+    if (typeof connection.id !== "string" || !connection.id) {
+      throw new ProviderRoutingError(503, "Provider connection configuration is invalid");
+    }
+    return { ...connection, id: connection.id };
+  });
   const scope = await resolveKeyConnectionScope(apiKeyInfo);
   if (scope.rejection) {
     throw new ProviderRoutingError(
@@ -190,7 +196,7 @@ export async function resolveProviderRoutingSelection(
       "No provider connections are allowed by this API key's connection or quota scope"
     );
   }
-  return selectProviderRoutingConnection(selection, connections, scope.allowedConnections);
+  return selectProviderRoutingConnection(selection, validatedConnections, scope.allowedConnections);
 }
 
 export function providerRoutingResponseHeaders(

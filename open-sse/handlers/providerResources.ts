@@ -105,7 +105,7 @@ const cachePatchSchema = z
   .strict()
   .refine((value) => (value.ttl !== undefined) !== (value.expireTime !== undefined));
 
-class ResourceTransportError extends Error {
+export class ResourceTransportError extends Error {
   constructor(
     readonly status: number,
     message: string
@@ -382,7 +382,8 @@ async function parseUpload(
               (v["expires_after[seconds]"] !== undefined)
           )
       : z.object({ file: fileSchema, display_name: z.string().max(512).optional() }).strict();
-  parse(schema, fields, "Invalid provider file upload fields");
+  if (!schema.safeParse(fields).success)
+    throw new ResourceTransportError(400, "Invalid provider file upload fields");
   const file = fields.file as File;
   if (file.size > MAX_FILE_BYTES)
     throw new ResourceTransportError(413, "File exceeds maximum allowed size of 512 MiB");
@@ -393,7 +394,10 @@ async function parseUpload(
   };
 }
 
-async function parseCache(request: Request, signal: AbortSignal): Promise<string> {
+async function parseCacheValue(
+  request: Request,
+  signal: AbortSignal
+): Promise<Record<string, unknown>> {
   if (
     request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json"
   ) {
@@ -416,7 +420,26 @@ async function parseCache(request: Request, signal: AbortSignal): Promise<string
   if (mask && (mask === "ttl") !== (value.ttl !== undefined)) {
     throw new ResourceTransportError(400, "Cache updateMask does not match the expiration field");
   }
-  return JSON.stringify(value);
+  return value;
+}
+
+/** Read once, with the same size/schema/cancellation guards used by transport. */
+export async function readProviderResourceCacheBody(
+  request: Request
+): Promise<Record<string, unknown>> {
+  const lifetime = deadline(request.signal);
+  try {
+    lifetime.signal.throwIfAborted();
+    return await parseCacheValue(request, lifetime.signal);
+  } catch (error) {
+    if (lifetime.signal.reason?.name === "TimeoutError")
+      throw new ResourceTransportError(504, "Provider resource request timed out");
+    if (request.signal.aborted)
+      throw new ResourceTransportError(499, "Provider resource request cancelled");
+    throw error;
+  } finally {
+    lifetime.cleanup();
+  }
 }
 
 function uploadUrl(value: string | null): URL {
@@ -566,7 +589,7 @@ export async function handleProviderResourceRequest(
       }
     } else {
       if (operation.kind === "cache" && (request.method === "POST" || request.method === "PATCH")) {
-        body = await parseCache(request, lifetime.signal);
+        body = JSON.stringify(await parseCacheValue(request, lifetime.signal));
         headers.set("content-type", "application/json");
       }
       upstream = await send(url, request.method, headers, body, lifetime.signal);
@@ -574,7 +597,12 @@ export async function handleProviderResourceRequest(
     if (!upstream.ok) return await upstreamError(upstream, context, lifetime.signal);
     const response = new Response(
       upstream.body
-        ? guardedStream(upstream.body, lifetime.signal, Infinity, lifetime.cleanup)
+        ? guardedStream(
+            upstream.body,
+            lifetime.signal,
+            operation.content ? MAX_FILE_BYTES : MAX_JSON_BYTES,
+            lifetime.cleanup
+          )
         : null,
       {
         status: upstream.status,
@@ -584,12 +612,13 @@ export async function handleProviderResourceRequest(
     streaming = upstream.body !== null;
     return response;
   } catch (error) {
-    if (request.signal.aborted) return failure(499, "Provider resource request cancelled");
     if (
+      request.signal.reason?.name === "TimeoutError" ||
       lifetime.signal.reason?.name === "TimeoutError" ||
       (error instanceof Error && error.name === "TimeoutError")
     )
       return failure(504, "Provider resource request timed out");
+    if (request.signal.aborted) return failure(499, "Provider resource request cancelled");
     if (error instanceof ResourceTransportError) return failure(error.status, error.message);
     return failure(502, "Provider resource request failed");
   } finally {

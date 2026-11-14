@@ -8,12 +8,19 @@ import {
 } from "@/app/api/v1/_helpers/apiKeyScope";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { buildErrorBody } from "@omniroute/open-sse/utils/error";
+import { tryHandleProviderResourceRequest } from "@/app/api/v1/_helpers/providerResources";
 
 export async function OPTIONS() {
   return handleCorsOptions();
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const routed = await tryHandleProviderResourceRequest(request, {
+    kind: "file",
+    id: (await params).id,
+    content: true,
+  });
+  if (routed) return routed;
   const scope = await getApiKeyRequestScope(request);
   if (scope.rejection) return scope.rejection;
 
