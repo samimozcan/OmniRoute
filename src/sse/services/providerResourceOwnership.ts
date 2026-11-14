@@ -37,7 +37,11 @@ export function normalizeProviderResourceId(
   }
 }
 
-/** Inspect native reference fields only; text, image URLs and inline bytes are not ids. */
+/**
+ * Inspect direct native file/cache attachments. Replayed output citations and
+ * search-result metadata, plus other provider resource namespaces, are outside
+ * this registry. Text, image URLs and inline bytes are not resource ids.
+ */
 export function collectProviderResourceReferences(
   body: Record<string, unknown>
 ): ProviderResourceReference[] {
@@ -49,6 +53,21 @@ export function collectProviderResourceReferences(
     }
     const resourceId = normalizeProviderResourceId(provider, kind, value);
     references.set(`${provider}:${kind}:${resourceId}`, { provider, kind, resourceId });
+  };
+  const addOpenAiFileIds = (value: unknown) => {
+    if (value === undefined) return;
+    if (!Array.isArray(value)) {
+      throw new ProviderRoutingError(400, "Invalid provider resource identifier.");
+    }
+    if (value.length > MAX_RESOURCE_REFERENCE_NODES) {
+      throw new ProviderRoutingError(400, "Provider resource request structure is too large.");
+    }
+    for (const fileId of value) {
+      if (typeof fileId !== "string") {
+        throw new ProviderRoutingError(400, "Invalid provider resource identifier.");
+      }
+      add("openai", "file", fileId);
+    }
   };
 
   add("gemini", "cache", body.cachedContent);
@@ -77,7 +96,25 @@ export function collectProviderResourceReferences(
       continue;
     }
     const object = value as Record<string, unknown>;
-    if (object.type === "input_file") add("openai", "file", object.file_id);
+    // Responses also accepts uploaded Files as images, screenshots, masks and
+    // tool-container inputs. Typed carriers keep ordinary metadata and output
+    // citation fields from being interpreted as new file inputs.
+    if (
+      object.type === "input_file" ||
+      object.type === "input_image" ||
+      object.type === "computer_screenshot"
+    ) {
+      add("openai", "file", object.file_id);
+    }
+    if (object.type === "image_generation") {
+      add("openai", "file", record(object.input_image_mask)?.file_id);
+    }
+    if (object.type === "code_interpreter") {
+      addOpenAiFileIds(record(object.container)?.file_ids);
+    }
+    if (object.type === "shell") {
+      addOpenAiFileIds(record(object.environment)?.file_ids);
+    }
     add("openai", "file", record(object.input_file)?.file_id);
     const chatFileId = record(object.file)?.file_id;
     const chatFileProvider =
