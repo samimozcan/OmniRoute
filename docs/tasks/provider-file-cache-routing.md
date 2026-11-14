@@ -32,10 +32,10 @@ The owner requested this work on 2026-11-14: first open an OmniRoute fork PR, re
 
 - [x] Confirm the fork, custom baseline and existing image channel.
 - [x] Create the dedicated branch and this initial checkpoint before implementation.
-- [ ] Open the draft PR with the complete initial task ledger.
-- [ ] Research current official OpenAI Files/Responses/prompt cache and Gemini Files/cachedContents contracts.
-- [ ] Read current resource routes, connection ordering, auth/policy, inference routing and fork publication workflow.
-- [ ] Commit a concrete design and implementation plan with exact files, contracts, index semantics and tests.
+- [x] Open the draft PR with the complete initial task ledger: https://github.com/samimozcan/OmniRoute/pull/4.
+- [x] Research current official OpenAI Files/Responses/prompt cache and Gemini Files/cachedContents contracts.
+- [x] Read current resource routes, connection ordering, auth/policy, inference routing and fork publication workflow.
+- [x] Commit a concrete design and implementation plan with exact files, contracts, index semantics and tests.
 - [ ] Add failing tests for opt-in selection, default index zero, explicit index, invalid index/provider, disabled credentials, auth and legacy behavior.
 - [ ] Implement deterministic account selection and stable connection identity for follow-up operations.
 - [ ] Implement supported upstream file lifecycle operations and return native identifiers.
@@ -70,3 +70,5 @@ Use synthetic fixtures and mocked provider HTTP for deterministic tests. No prod
 ## Checkpoints
 
 - 2026-11-14: Baseline and initial task ledger recorded. Implementation, tests and image publication have not started.
+
+- 2026-11-14: Research and API contract recorded in `provider-resource-routing-design.md`; implementation steps in `provider-resource-routing-plan.md`. Ruling: these documents live in tracked `docs/tasks/` because the repository ignores `docs/superpowers/` and the owner requires resumable committed history. Initial plan was created through the authenticated GitHub connector; subsequent implementation checkpoints run local hooks before connector publication.
