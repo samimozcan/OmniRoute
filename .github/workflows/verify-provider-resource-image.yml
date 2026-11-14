@@ -1,0 +1,165 @@
+name: Verify published provider-resource image
+
+on:
+  push:
+    branches: [feat/provider-file-cache-routing]
+    paths:
+      - ".github/workflows/verify-provider-resource-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-provider-resources-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/samimozcan/omniroute
+  PUBLISHED_IMAGE_DIGEST: sha256:011a720297b8e853528c8a10fb75702839182a973486c971f28dc7d48cc58c81
+  IMAGE_SOURCE_SHA: 3ef1bf674c9f3426fdf726a183d7ad4c4c973faf
+
+jobs:
+  runtime:
+    name: Verify published image on ${{ matrix.arch }}
+    if: >-
+      github.repository == 'samimozcan/OmniRoute' &&
+      github.ref == 'refs/heads/feat/provider-file-cache-routing'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out the verification commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind source regressions to the published image
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$IMAGE_SOURCE_SHA"
+          # Later documentation/workflow checkpoints are allowed, runtime changes are not.
+          git diff --exit-code "$IMAGE_SOURCE_SHA" HEAD -- . \
+            ':(exclude)docs/**' ':(exclude).github/workflows/**' \
+            ':(exclude)README.md' ':(exclude)AGENTS.md' ':(exclude)llm.txt'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Verify the immutable multi-platform manifest
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "${IMAGE_NAME}@${PUBLISHED_IMAGE_DIGEST}" \
+            | jq -e '[.manifests[].platform | select(.os == "linux") | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
+
+      # All runtime writes are confined to this job's disposable container and volume.
+      # The public image is pulled by digest; no registry login or publication is performed.
+      - name: Check native startup and reuse a disposable data volume
+        env:
+          IMAGE_DIGEST: ${{ env.PUBLISHED_IMAGE_DIGEST }}
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          image_ref="${IMAGE_NAME}@${IMAGE_DIGEST}"
+          container="omniroute-provider-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${BUILD_ARCH}"
+          volume="${container}-data"
+
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker pull "$image_ref"
+          actual_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_ref")
+          test "$actual_platform" = "$EXPECTED_PLATFORM"
+          actual_source=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref")
+          test "$actual_source" = "$IMAGE_SOURCE_SHA"
+          docker volume create "$volume" >/dev/null
+
+          start_and_wait() {
+            docker run --detach --name "$container" \
+              --stop-timeout 40 \
+              --mount "type=volume,source=${volume},target=/app/data" \
+              -e OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK=1 \
+              -e REQUIRE_API_KEY=false \
+              "$image_ref"
+
+            for attempt in $(seq 1 60); do
+              health=$(docker inspect --format '{{.State.Health.Status}}' "$container")
+              state=$(docker inspect --format '{{.State.Status}}' "$container")
+              if [ "$health" = "healthy" ]; then
+                return 0
+              fi
+              if [ "$health" = "unhealthy" ] || [ "$state" != "running" ]; then
+                docker logs "$container"
+                return 1
+              fi
+              sleep 2
+            done
+            docker logs "$container"
+            return 1
+          }
+
+          start_and_wait
+          docker exec "$container" node --version
+          docker exec -i --env "SOURCE_SHA=${IMAGE_SOURCE_SHA}" "$container" node <<'NODE'
+          const assert = require("node:assert/strict");
+          const { DatabaseSync } = require("node:sqlite");
+          const db = new DatabaseSync("/app/data/storage.sqlite");
+          db.exec("PRAGMA busy_timeout = 5000");
+          db.prepare("INSERT INTO provider_resources (provider, connection_id, kind, resource_id, api_key_id, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .run("openai", "smoke-connection", "file", "file-smoke-volume", "smoke-owner", JSON.stringify({ source: process.env.SOURCE_SHA }), Math.floor(Date.now() / 1000));
+          db.close();
+          (async () => {
+            for (const path of ["/v1/files", "/v1/cachedContents", "/v1/cachedContents/smoke"]) {
+              const response = await fetch(`http://127.0.0.1:20128${path}`, {
+                headers: { "X-OmniRoute-Provider": "unsupported-smoke-provider" },
+                signal: AbortSignal.timeout(5000),
+              });
+              assert.equal(response.status, 400, path);
+              assert.match(await response.text(), /provider/i, path);
+            }
+          })().catch((error) => { console.error(error); process.exit(1); });
+          NODE
+          docker exec --env "SOURCE_SHA=${IMAGE_SOURCE_SHA}" "$container" node -e \
+            'require("node:fs").writeFileSync("/app/data/provider-resource-smoke.txt", process.env.SOURCE_SHA)'
+          docker stop -t 40 "$container" >/dev/null
+          docker rm "$container" >/dev/null
+          start_and_wait
+          docker exec -i --env "SOURCE_SHA=${IMAGE_SOURCE_SHA}" "$container" node <<'NODE'
+          const assert = require("node:assert/strict");
+          const { DatabaseSync } = require("node:sqlite");
+          const db = new DatabaseSync("/app/data/storage.sqlite", { readOnly: true });
+          db.exec("PRAGMA busy_timeout = 5000");
+          const binding = db.prepare("SELECT api_key_id, metadata FROM provider_resources WHERE provider = ? AND connection_id = ? AND kind = ? AND resource_id = ?")
+            .get("openai", "smoke-connection", "file", "file-smoke-volume");
+          assert.equal(binding.api_key_id, "smoke-owner");
+          assert.equal(JSON.parse(binding.metadata).source, process.env.SOURCE_SHA);
+          db.close();
+          NODE
+          docker exec --env "SOURCE_SHA=${IMAGE_SOURCE_SHA}" "$container" node -e \
+            'require("node:assert/strict").equal(require("node:fs").readFileSync("/app/data/provider-resource-smoke.txt", "utf8"), process.env.SOURCE_SHA)'
+
+      - name: Record verified image identity and runtime checks
+        env:
+          VERIFIED_PLATFORM: ${{ matrix.platform }}
+        run: |
+          {
+            printf '### Published provider-resource image verification\n\n'
+            printf 'Image: `%s@%s`\n\n' "$IMAGE_NAME" "$PUBLISHED_IMAGE_DIGEST"
+            printf 'Image source: `%s`\n\n' "$IMAGE_SOURCE_SHA"
+            printf 'Platform: `%s`\n\n' "$VERIFIED_PLATFORM"
+            printf 'Passed: native startup, resource migration, endpoint selection validation, resource binding and file persistence after restart.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
