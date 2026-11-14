@@ -15282,6 +15282,16 @@ paths:
         "200":
           description: OK
   /api/v1/files:
+    description: |
+      Without provider selection, files are stored locally as before. Set
+      X-OmniRoute-Provider to openai or gemini (google is an alias) to upload
+      and manage upstream files. Key index defaults to zero. The native resource
+      identifier is returned unchanged; X-OmniRoute-Selected-Connection-Id is the
+      stable connection to reuse. Upstream resource access remains owner scoped.
+    parameters:
+      - $ref: "#/components/parameters/ProviderResourceProvider"
+      - $ref: "#/components/parameters/ProviderResourceKeyIndex"
+      - $ref: "#/components/parameters/ProviderResourceConnection"
     get:
       tags:
         - V1 Files
@@ -15297,6 +15307,10 @@ paths:
         "200":
           description: OK
   /api/v1/files/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProviderResourceProvider"
+      - $ref: "#/components/parameters/ProviderResourceKeyIndex"
+      - $ref: "#/components/parameters/ProviderResourceConnection"
     delete:
       tags:
         - V1 Files
@@ -15312,6 +15326,11 @@ paths:
         "200":
           description: OK
   /api/v1/files/{id}/content:
+    description: Provider-selected content download is supported for OpenAI files only.
+    parameters:
+      - $ref: "#/components/parameters/ProviderResourceProvider"
+      - $ref: "#/components/parameters/ProviderResourceKeyIndex"
+      - $ref: "#/components/parameters/ProviderResourceConnection"
     get:
       tags:
         - V1 Files
@@ -15319,6 +15338,91 @@ paths:
       responses:
         "200":
           description: OK
+  /api/v1/cachedContents:
+    description: |
+      Native Gemini explicit context caches. X-OmniRoute-Provider is required;
+      an omitted key index selects position zero. OpenAI request-level prompt
+      caching does not provide this standalone resource API. Lists show only
+      accessible resources registered through this gateway.
+    parameters:
+      - $ref: "#/components/parameters/RequiredProviderResourceProvider"
+      - $ref: "#/components/parameters/ProviderResourceKeyIndex"
+      - $ref: "#/components/parameters/ProviderResourceConnection"
+    get:
+      tags: [V1 Files]
+      summary: List owned native Gemini caches
+      responses:
+        "200":
+          description: Native cachedContents metadata and optional nextPageToken
+    post:
+      tags: [V1 Files]
+      summary: Create a native Gemini cache on a selected API-key connection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model:
+                  type: string
+                  description: Native model name in models/model format
+                contents:
+                  type: array
+                  items: { type: object }
+                systemInstruction: { type: object }
+                tools:
+                  type: array
+                  items: { type: object }
+                toolConfig: { type: object }
+                displayName: { type: string }
+                ttl: { type: string, example: 3600s }
+                expireTime: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Native cache name, model, expiry and provider metadata
+        "400":
+          description: Invalid selector/body or unsupported provider capability
+        "403":
+          description: API key endpoint, connection or model policy denies the request
+  /api/v1/cachedContents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RequiredProviderResourceProvider"
+      - $ref: "#/components/parameters/ProviderResourceKeyIndex"
+      - $ref: "#/components/parameters/ProviderResourceConnection"
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Short cache id or URL-encoded cachedContents/id name
+    get:
+      tags: [V1 Files]
+      summary: Read an owned native cache
+      responses:
+        "200": { description: Native cache metadata }
+        "404": { description: Resource not registered for this caller and connection }
+    patch:
+      tags: [V1 Files]
+      summary: Update an owned native cache expiry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Supply exactly one of ttl or expireTime; cache content is immutable.
+              properties:
+                ttl: { type: string, example: 3600s }
+                expireTime: { type: string, format: date-time }
+      responses:
+        "200": { description: Updated native cache metadata }
+    delete:
+      tags: [V1 Files]
+      summary: Delete an owned native cache and its gateway binding
+      responses:
+        "200": { description: Native deletion response }
+        "204": { description: Cache deleted }
   /api/v1/images/edits:
     post:
       tags:
@@ -16296,6 +16400,36 @@ components:
       description: Dashboard management session cookie (auth_token) for protected management routes. Distinct from Bearer Access Tokens and API keys. See docs/guides/MANAGEMENT-AUTH.md.
 
   parameters:
+    ProviderResourceProvider:
+      name: X-OmniRoute-Provider
+      in: header
+      required: false
+      description: Opt in to native provider resources and strict account routing.
+      schema: { type: string, enum: [openai, gemini, google] }
+    RequiredProviderResourceProvider:
+      name: X-OmniRoute-Provider
+      in: header
+      required: true
+      description: Gemini native cache provider; google aliases gemini.
+      schema: { type: string, enum: [gemini, google] }
+    ProviderResourceKeyIndex:
+      name: X-OmniRoute-Key-Index
+      in: header
+      required: false
+      description: |
+        Zero-based API-key connection position; defaults to 0 when provider is set.
+        Sorted by priority, creation time and id, including inactive rows. A selected
+        unavailable/forbidden account fails without selecting another account.
+      schema: { type: integer, minimum: 0, default: 0 }
+    ProviderResourceConnection:
+      name: X-OmniRoute-Connection
+      in: header
+      required: false
+      description: |
+        Stable selected connection id for follow-up operations. With a provider and
+        no explicit index, this identity takes precedence over the default position.
+        If an index is also supplied, both must identify the same connection.
+      schema: { type: string }
     ResourceId:
       name: id
       in: path
