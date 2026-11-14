@@ -11,8 +11,44 @@ import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingS
 import { isResponsesEndpointPath } from "../../utils/responsesEndpoint.ts";
 import { mergeClientAnthropicBeta } from "../../config/anthropicHeaders.ts";
 import { getHeaderValueCaseInsensitive } from "./headers.ts";
+import { getExecutor } from "../../executors/index.ts";
+import type { BaseExecutor } from "../../executors/base.ts";
 
 export { isResponsesEndpointPath };
+
+/** Native resource bindings cannot follow model aliases or a replacement account pool. */
+export async function resolveNativeProviderResourceExecutor(
+  provider: string,
+  model: string,
+  validationFence?: ((executor: BaseExecutor) => BaseExecutor) | null
+): Promise<BaseExecutor> {
+  const native = await getExecutor(provider);
+  const executor = validationFence ? validationFence(native) : native;
+  const scoped = Object.create(executor) as BaseExecutor;
+  scoped.execute = async (input) => {
+    const bodyModel =
+      input.body && typeof input.body === "object"
+        ? (input.body as Record<string, unknown>).model
+        : undefined;
+    if (input.model !== model || (bodyModel !== undefined && bodyModel !== model)) {
+      return {
+        response: Response.json(
+          {
+            error: {
+              message: "Provider resource routing cannot change the selected native model",
+              type: "invalid_request_error",
+              code: "provider_resource_model_mismatch",
+            },
+          },
+          { status: 400 }
+        ),
+      };
+    }
+    // The original credentials still carry their assigned transport proxy.
+    return executor.execute(input);
+  };
+  return scoped;
+}
 
 export const XAI_API_PROVIDERS = new Set(["xai", "xai-oauth", "xao"]);
 
@@ -122,9 +158,15 @@ export function shouldUseNativeOpenAICompatibleResponsesPassthrough({
   providerSpecificData?: unknown;
   body?: unknown;
 }): boolean {
-  if (!provider?.startsWith("openai-compatible-")) return false;
+  const nativeResourceResponses =
+    provider === "openai" &&
+    !!providerSpecificData &&
+    typeof providerSpecificData === "object" &&
+    (providerSpecificData as Record<string, unknown>)._omnirouteNativeResourceResponses === true;
+  if (!provider?.startsWith("openai-compatible-") && !nativeResourceResponses) return false;
   if (sourceFormat !== FORMATS.OPENAI_RESPONSES) return false;
   if (body !== undefined && !isResponsesShapedBody(body)) return false;
+  if (nativeResourceResponses) return true;
   if (providerSpecificData && typeof providerSpecificData === "object") {
     const psd = providerSpecificData as Record<string, unknown>;
     if (psd.apiType === "responses" || psd._omnirouteForceResponsesUpstream === true) {

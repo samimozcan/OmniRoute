@@ -14,6 +14,15 @@ import { FORMATS } from "@omniroute/open-sse/translator/formats.ts";
 import { resolveRoutingModel, RoutingModelOps } from "./resolveRoutingModel";
 import { resolveApiKeyForcedModel } from "./apiKeyForcedModel";
 import {
+  parseProviderResourceInference,
+  providerResourceModel,
+  resolveProviderResourceInference,
+  validateProviderResourceInference,
+  providerResourceCredentials,
+  withProviderResourceRoutingHeaders,
+} from "./chat/providerResourceInference.ts";
+import type { ResolvedProviderRouting } from "../services/providerResourceRouting";
+import {
   getProviderCredentialsWithQuotaPreflight,
   markAccountUnavailable,
   buildExhaustionOptions,
@@ -578,14 +587,18 @@ async function handleChatImplementation(
 
   // Log request endpoint and model
   const url = new URL(request.url);
+  const providerSelection = parseProviderResourceInference(request.headers);
+  if (providerSelection instanceof Response) return providerSelection;
 
   // No-thinking gateway alias (Fase 8.1): `no-think/<provider>/<model>`
   // resolves back to the real model with reasoning suppressed in place, before any
   // model resolution / combo routing sees it. Claude/Messages path forces
   // `thinking:{type:"disabled"}`; OpenAI path drops the reasoning fields.
-  const noThinking = applyNoThinkingAlias(body, {
-    claudeFormat: url.pathname.includes("/messages"),
-  });
+  const noThinking = providerSelection
+    ? { applied: false, realModel: "" }
+    : applyNoThinkingAlias(body, {
+        claudeFormat: url.pathname.includes("/messages"),
+      });
   if (noThinking.applied) {
     log.debug("NO_THINKING", `Resolved no-thinking alias → ${noThinking.realModel}`);
   }
@@ -595,6 +608,12 @@ async function handleChatImplementation(
   // still passes through enforceApiKeyPolicy below, so it cannot bypass per-key
   // allowlists or budgets.
   let modelStr = resolveRoutingModel(request, body, await resolveApiKeyForcedModel(request, log));
+  if (providerSelection && typeof modelStr === "string") {
+    const selectedModel = await providerResourceModel(providerSelection, modelStr);
+    if (selectedModel instanceof Response) return selectedModel;
+    modelStr = selectedModel;
+  }
+  const providerResourceModelStr = providerSelection ? modelStr : null;
   if (typeof modelStr === "string") {
     // Preserve literal combo names such as "Claude [1m]". Context tags are
     // stripped only when the exact request does not identify a combo.
@@ -611,7 +630,9 @@ async function handleChatImplementation(
   // resolve back to the real id before any combo lookup / resolveModelOrError()
   // sees it — see resolveCcDiscoveryAliasStrip. A genuine claude/ model id (the
   // real Claude OAuth provider namespace) is always left untouched.
-  const ccAliasStrip = await resolveCcDiscoveryAliasStrip(modelStr);
+  const ccAliasStrip = providerSelection
+    ? { stripped: false, model: modelStr }
+    : await resolveCcDiscoveryAliasStrip(modelStr);
   if (ccAliasStrip.stripped) {
     log.debug("CC_DISCOVERY", `Resolved cc discovery alias: ${modelStr} → ${ccAliasStrip.model}`);
     modelStr = ccAliasStrip.model;
@@ -740,6 +761,17 @@ async function handleChatImplementation(
     });
   }
   const apiKeyInfo = policy.apiKeyInfo;
+  let providerResourceRoute: ResolvedProviderRouting | null = null;
+  if (providerSelection) {
+    const selected = await resolveProviderResourceInference(
+      request,
+      body,
+      providerSelection,
+      apiKeyInfo
+    );
+    if (selected instanceof Response) return selected;
+    providerResourceRoute = selected;
+  }
   let managedLease: ManagedLeaseDispatchContext | null = null;
   if (isExclusiveLeaseManagedKey(apiKeyInfo)) {
     try {
@@ -784,6 +816,7 @@ async function handleChatImplementation(
       .responsesPreviousResponseIdMode
   );
   if (
+    !providerResourceRoute &&
     previousResponseIdMode !== "preserve" &&
     !isChatGptWebCodexModel(modelStr) &&
     sourceFormat === FORMATS.OPENAI_RESPONSES &&
@@ -1041,6 +1074,12 @@ async function handleChatImplementation(
   resolvedModelStr = reasoningRouting.modelStr;
   reasoningDecision = reasoningRouting.reasoningDecision;
   requestRoutingTags = reasoningRouting.requestRoutingTags;
+  if (providerResourceRoute && resolvedModelStr !== providerResourceModelStr) {
+    return errorResponse(
+      400,
+      "Provider resource routing cannot be redirected to another model or combo"
+    );
+  }
 
   const autoRouting = await resolveAutoRoutingState(resolvedModelStr);
   if (autoRouting.response) return autoRouting.response;
@@ -1067,6 +1106,8 @@ async function handleChatImplementation(
   if (virtualCombo instanceof Response) return virtualCombo;
   combo = virtualCombo;
   if (combo) {
+    if (providerResourceRoute)
+      return errorResponse(400, "Provider resource routing does not support combos");
     if (reasoningDecision) {
       const filtered = filterReasoningCombo(combo, reasoningDecision);
       if (filtered instanceof Response) return filtered;
@@ -1424,9 +1465,11 @@ async function handleChatImplementation(
     telemetry,
     {
       sessionId,
-      sessionAffinityKey,
-      forceLiveComboTest: isComboLiveTest,
-      forcedConnectionId: requestedConnectionId,
+      sessionAffinityKey: providerResourceRoute ? null : sessionAffinityKey,
+      forceLiveComboTest: providerResourceRoute ? false : isComboLiveTest,
+      forcedConnectionId: providerResourceRoute?.connectionId ?? requestedConnectionId,
+      allowedConnectionIds: providerResourceRoute ? [providerResourceRoute.connectionId] : null,
+      providerResourceRoute,
       correlationId: reqId,
       conversationId,
       routingComboId,
@@ -1445,7 +1488,13 @@ async function handleChatImplementation(
   recordTelemetry(telemetry);
   return withModalityBridgeHeader(
     withConversationId(
-      withCorrelationId(withSessionHeader(response, sessionId), reqId),
+      withCorrelationId(
+        withSessionHeader(
+          withProviderResourceRoutingHeaders(response, providerResourceRoute),
+          sessionId
+        ),
+        reqId
+      ),
       conversationId
     ),
     modalityBridgeHeader
@@ -1483,6 +1532,7 @@ async function handleSingleModelChat(
     sessionId?: string | null;
     sessionAffinityKey?: string | null;
     forcedConnectionId?: string | null;
+    providerResourceRoute?: ResolvedProviderRouting | null;
     allowedConnectionIds?: string[] | null;
     emptyTurnConnectionId?: string | null;
     comboStepId?: string | null;
@@ -1527,7 +1577,8 @@ async function handleSingleModelChat(
     modelStr,
     body,
     clientRawRequest?.endpoint,
-    clientRawRequest?.headers
+    clientRawRequest?.headers,
+    runtimeOptions.providerResourceRoute?.provider
   );
   if (resolved.error) return resolved.error;
 
@@ -1535,6 +1586,8 @@ async function handleSingleModelChat(
   // to combo flow. This handles the case where the auto-fuzzy match in
   // resolveModelOrError found a combo but the main handler's combo lookup missed it.
   if ((resolved as any).combo) {
+    if (runtimeOptions.providerResourceRoute)
+      return errorResponse(400, "Provider resource routing does not support combos");
     const redirectCombo = (resolved as any).combo;
     if (runtimeOptions.managedLease) return managedComboRejection();
     log.info(
@@ -1808,7 +1861,8 @@ async function handleSingleModelChat(
           {
             connectionRestrictionSources: restrictions.sources,
             requireToolCalling: hasQoderCallerTools(body),
-            sessionKey: museOwner ? null : occupancySessionKey,
+            sessionKey:
+              museOwner || runtimeOptions.providerResourceRoute ? null : occupancySessionKey,
             preferredConnectionIds: apiKeyInfo?.preferredConnections ?? null,
             reserveOAuthSession: true,
             excludeConnectionIds: Array.from(excluded),
@@ -1984,6 +2038,17 @@ async function handleSingleModelChat(
         return withSelectedConnectionHeader(noCredsRes, lastFailedConnectionId);
       }
 
+      if (runtimeOptions.providerResourceRoute) {
+        if (credentials.connectionId !== runtimeOptions.providerResourceRoute.connectionId) {
+          credentials.releaseOAuthSession?.();
+          return errorResponse(503, "The selected native provider connection is unavailable");
+        }
+        credentials = providerResourceCredentials(
+          credentials,
+          runtimeOptions.providerResourceRoute,
+          sourceFormat
+        );
+      }
       const accountId = credentials.connectionId.slice(0, 8);
       const releaseOAuthSession = credentials.releaseOAuthSession ?? (() => {});
       // Undefined whenever the lease flag is off, which makes every release/hold below a no-op.
@@ -2052,6 +2117,17 @@ async function handleSingleModelChat(
         releaseOAuthSession();
         agyLease.release(leaseId);
         return effectivePolicyRejection;
+      }
+      const resourceRejection = await validateProviderResourceInference(
+        request,
+        requestBody,
+        runtimeOptions.providerResourceRoute,
+        apiKeyInfo
+      );
+      if (resourceRejection) {
+        releaseOAuthSession();
+        agyLease.release(leaseId);
+        return resourceRejection;
       }
       let injectedHandoff = null;
       if (
@@ -2557,7 +2633,11 @@ async function handleSingleModelChat(
       // Combo targets never emergency-hop: the combo is the operator's fallback policy
       // (target-level orchestration plus the global fallback #689 after it), and a
       // per-target hop burns extra upstream calls against exhausted providers (#1731).
-      if (!runtimeOptions.emergencyFallbackTried && !comboName) {
+      if (
+        !runtimeOptions.providerResourceRoute &&
+        !runtimeOptions.emergencyFallbackTried &&
+        !comboName
+      ) {
         const fallbackDecision = await resolveEmergencyFallbackDecision(
           Number(result.status || 0),
           String(result.error || ""),

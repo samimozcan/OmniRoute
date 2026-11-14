@@ -23,7 +23,7 @@ const ENV_ALLOWED = "CORS_ALLOWED_ORIGINS";
 const LEGACY_ENV_SINGLE = "CORS_ORIGIN";
 
 const STANDARD_ALLOW_HEADERS =
-  "Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept";
+  "Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, x-omniroute-provider, x-omniroute-key-index, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept";
 const STANDARD_ALLOW_METHODS = "GET, POST, PUT, DELETE, PATCH, OPTIONS";
 
 let runtimeAllowedOrigins: ReadonlySet<string> = new Set();
@@ -200,6 +200,19 @@ export function applyCorsHeaders(
   }
   response.headers.set("Access-Control-Allow-Methods", STANDARD_ALLOW_METHODS);
   response.headers.set("Access-Control-Allow-Headers", STANDARD_ALLOW_HEADERS);
+  const exposed = new Set(
+    (response.headers.get("Access-Control-Expose-Headers") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+  for (const name of [
+    "X-OmniRoute-Provider",
+    "X-OmniRoute-Key-Index",
+    "X-OmniRoute-Selected-Connection-Id",
+  ])
+    exposed.add(name);
+  response.headers.set("Access-Control-Expose-Headers", [...exposed].join(", "));
   const requestedHeaders = request.headers.get("access-control-request-headers");
   if (requestedHeaders) {
     response.headers.set("Access-Control-Allow-Headers", requestedHeaders);

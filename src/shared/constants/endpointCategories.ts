@@ -106,7 +106,7 @@ export const ENDPOINT_CATEGORIES: readonly EndpointCategory[] = [
     id: "files",
     label: "Files",
     description: "File upload and management",
-    prefixes: ["/v1/files"],
+    prefixes: ["/v1/files", "/v1/cachedContents"],
   },
   {
     id: "web-fetch",

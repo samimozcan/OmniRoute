@@ -121,13 +121,20 @@ export async function resolveModelOrError(
   modelStr: string,
   body: any,
   endpointPath: string = "",
-  requestHeaders: Record<string, unknown> | null | undefined = null
+  requestHeaders: Record<string, unknown> | null | undefined = null,
+  nativeProvider?: "openai" | "gemini"
 ) {
   const modelInfo = await getModelInfoOrRetirementResponse(modelStr);
   if ("error" in modelInfo) return modelInfo;
+  if (nativeProvider && modelInfo.provider !== nativeProvider) {
+    return {
+      error: errorResponse(400, "The model does not resolve to the selected native provider"),
+    };
+  }
   const sourceFormat = detectFormatFromEndpoint(body, endpointPath);
 
   if (
+    !nativeProvider &&
     modelInfo.provider === "openai" &&
     typeof modelInfo.model === "string" &&
     CODEX_NATIVE_RESPONSES_MODELS.has(modelInfo.model) &&
@@ -139,6 +146,7 @@ export async function resolveModelOrError(
   }
 
   if (
+    !nativeProvider &&
     modelInfo.provider === "openai" &&
     modelInfo.model === "gpt-5.5" &&
     sourceFormat === "openai-responses" &&

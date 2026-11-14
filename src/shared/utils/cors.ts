@@ -11,9 +11,11 @@ import { credentialRejectionCorsHeaders } from "@/server/cors/origins";
  * overlays the proper origin on the way out.
  */
 export const CORS_HEADERS = {
+  "Access-Control-Expose-Headers":
+    "X-OmniRoute-Provider, X-OmniRoute-Key-Index, X-OmniRoute-Selected-Connection-Id",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, x-omniroute-allow-cross-version-fallback, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept",
+    "Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, x-omniroute-provider, x-omniroute-key-index, x-omniroute-allow-cross-version-fallback, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept",
 } as const;
 
 /**

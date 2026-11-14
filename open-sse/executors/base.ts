@@ -608,7 +608,12 @@ export class BaseExecutor {
       }
 
       // Fix #1884: Cursor sends prompt_cache_retention which breaks strict upstream endpoints
-      delete cloned.prompt_cache_retention;
+      if (!(
+        this.provider === "openai" &&
+        credentials.providerSpecificData?._omnirouteProviderResourceRouting === true
+      )) {
+        delete cloned.prompt_cache_retention;
+      }
 
       // Also clean up top level optional fields that commonly cause issues when empty
       const optionalKeys = ["user", "stop", "seed", "response_format"];
