@@ -1,0 +1,149 @@
+name: Port and verify v3.8.54 fork compatibility
+
+on:
+  push:
+    branches: [feat/v3.8.54-terra-cmdk]
+    paths:
+      - .github/workflows/fork-v3854-port.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-v3854-port
+  cancel-in-progress: false
+
+jobs:
+  port:
+    if: github.repository == 'samimozcan/OmniRoute' && github.ref == 'refs/heads/feat/v3.8.54-terra-cmdk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      OLD_BASE: 191dce8d534ceb56c28a08e71381284a9a87838f
+      OLD_HEAD: ce57802a69b8f2669f7ce946847c5bb406b7d79e
+      NEW_BASE: 1c880c5c95b3f0240d5e4c6c8f0947ec46b5d25e
+      DISABLE_SQLITE_AUTO_BACKUP: 'true'
+      OMNIROUTE_SKIP_SYSTEM_TRUST: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Fetch pinned sources and prepare test-only baseline
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$OLD_BASE" "$OLD_HEAD" "$NEW_BASE"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/compatibility"
+          for file in tests/unit/openai-canonical-effort-18912.test.ts tests/unit/openai-reporting-retirement.test.ts tests/unit/ui/command-palette-frequency.test.tsx src/shared/utils/commandPalettePreferences.ts; do
+            test ! -e "$file"
+            git show "$OLD_HEAD:$file" > "$file"
+          done
+      - uses: ./.github/actions/npm-ci-retry
+        with:
+          cache: 'false'
+      - name: Record failing baseline without modifying the upstream component or translator
+        run: |
+          set +e
+          node --import tsx/esm --import ./open-sse/utils/setupPolyfill.ts --import ./tests/_setup/isolateDataDir.ts --test --test-force-exit tests/unit/openai-canonical-effort-18912.test.ts tests/unit/openai-reporting-retirement.test.ts > "$RUNNER_TEMP/compatibility/node-before.log" 2>&1
+          result=$?
+          echo "NODE_BEFORE_EXIT=$result"
+          grep -E '^.(tests|suites|pass|fail)|^.(✔|✖)|thinking is not an OpenAI Chat field' "$RUNNER_TEMP/compatibility/node-before.log" | head -n 75
+          node node_modules/vitest/vitest.mjs run --config vitest.config.ts --maxWorkers=2 tests/unit/ui/command-palette-frequency.test.tsx tests/unit/ui/command-palette-kit.test.tsx > "$RUNNER_TEMP/compatibility/ui-before.log" 2>&1
+          echo "UI_BEFORE_EXIT=$?"
+          tail -n 12 "$RUNNER_TEMP/compatibility/ui-before.log"
+          # The baseline is evidence, not a passing regression gate.
+          exit 0
+      - name: Apply reviewed selective delta and preserve new upstream palette behavior
+        run: |
+          set -euo pipefail
+          rm src/shared/utils/commandPalettePreferences.ts
+          python3 scripts/ad-hoc/port-v3854-compatibility.py
+          git diff --check
+          python3 - <<'PY'
+          import importlib.util, subprocess
+          spec = importlib.util.spec_from_file_location('port', 'scripts/ad-hoc/port-v3854-compatibility.py')
+          module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+          allowed = set(module.PATCH_PATHS + module.TEST_PATHS + [module.PALETTE])
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only', 'HEAD']).decode().splitlines())
+          untracked = set(subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard']).decode().splitlines())
+          if (changed | untracked) - allowed:
+              raise SystemExit('Unexpected changed files: ' + str((changed | untracked) - allowed))
+          with open('/tmp/v3854-changed-paths', 'w') as out:
+              out.write('\n'.join(sorted(allowed)) + '\n')
+          PY
+          xargs -d '\n' node node_modules/prettier/bin/prettier.cjs --write < /tmp/v3854-changed-paths
+          git diff HEAD --stat
+      - name: Verify Terra and adjacent request and retired metadata regressions
+        run: |
+          set -euo pipefail
+          node --import tsx/esm --import ./open-sse/utils/setupPolyfill.ts --import ./tests/_setup/isolateDataDir.ts --test --test-force-exit \
+            tests/unit/openai-canonical-effort-18912.test.ts \
+            tests/unit/effort-thinking-standardization-6241.test.ts \
+            tests/unit/chatcore-upstream-body.test.ts \
+            tests/unit/translator-strip-client-metadata-1157.test.ts \
+            tests/unit/gpt5-tools-reasoning-guard.test.ts \
+            tests/unit/gpt5-sampling-guard.test.ts \
+            tests/unit/gpt6-luna-tools-reasoning-16440.test.ts \
+            tests/unit/openai-reporting-retirement.test.ts \
+            tests/unit/provider-specific-data-secrets-response.test.ts \
+            tests/unit/provider-specific-data-secrets-at-rest.test.ts \
+            tests/unit/provider-specific-secrets-16836.test.ts \
+            tests/unit/provider-specific-secrets-db-16836.test.ts \
+            > "$RUNNER_TEMP/compatibility/node-after.log" 2>&1 || { tail -n 200 "$RUNNER_TEMP/compatibility/node-after.log"; exit 1; }
+          tail -n 30 "$RUNNER_TEMP/compatibility/node-after.log"
+      - name: Verify real palette regressions and upstream relevance behavior
+        run: |
+          set -euo pipefail
+          node node_modules/vitest/vitest.mjs run --config vitest.config.ts --maxWorkers=2 tests/unit/ui/command-palette-frequency.test.tsx tests/unit/ui/command-palette-kit.test.tsx > "$RUNNER_TEMP/compatibility/ui-after.log" 2>&1 || { tail -n 200 "$RUNNER_TEMP/compatibility/ui-after.log"; exit 1; }
+          tail -n 30 "$RUNNER_TEMP/compatibility/ui-after.log"
+      - name: Verify types and changed-file lint and formatting
+        run: |
+          set -euo pipefail
+          npm run typecheck:core > "$RUNNER_TEMP/compatibility/typecheck.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/compatibility/typecheck.log"; exit 1; }
+          grep -E '\.tsx?$' /tmp/v3854-changed-paths | xargs -d '\n' node node_modules/eslint/bin/eslint.js > "$RUNNER_TEMP/compatibility/lint.log" 2>&1 || { cat "$RUNNER_TEMP/compatibility/lint.log"; exit 1; }
+          xargs -d '\n' node node_modules/prettier/bin/prettier.cjs --check < /tmp/v3854-changed-paths
+          git diff --check
+          test ! -f open-sse/services/usage/openaiAdmin.ts
+          test ! -f open-sse/services/usage/openaiRateLimits.ts
+      - name: Commit through normal hooks and push only this unchanged task branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "$(git show -s --format=%an "$OLD_HEAD")"
+          git config user.email "$(git show -s --format=%ae "$OLD_HEAD")"
+          test -f .husky/_/pre-commit
+          test "$(git config core.hooksPath)" = .husky/_
+          xargs -d '\n' git add -- < /tmp/v3854-changed-paths
+          git diff --cached --stat
+          git commit -m "fix: preserve Terra and optional Cmd K ranking on v3.8.54" > "$RUNNER_TEMP/compatibility/commit.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/compatibility/commit.log"; exit 1; }
+          gh auth setup-git
+          remote_head=$(git ls-remote origin refs/heads/feat/v3.8.54-terra-cmdk | cut -f1)
+          test "$remote_head" = "$GITHUB_SHA"
+          git push origin HEAD:refs/heads/feat/v3.8.54-terra-cmdk
+          candidate=$(git rev-parse HEAD)
+          git diff "$NEW_BASE" HEAD --stat
+          echo "VERIFIED_CANDIDATE_SHA=$candidate"
+          printf 'Verified compatibility candidate: `%s`. Focused tests/types/lint/hooks passed. No image publication or deployment.\n' "$candidate" >> "$GITHUB_STEP_SUMMARY"
+          git diff "$NEW_BASE" HEAD -- open-sse src tests > "$RUNNER_TEMP/compatibility/production.diff"
+      - name: Preserve evidence and resulting source for review
+        if: always()
+        run: |
+          set -euo pipefail
+          git diff HEAD -- open-sse src tests > "$RUNNER_TEMP/compatibility/uncommitted.diff"
+          cp src/shared/components/CommandPalette.tsx "$RUNNER_TEMP/compatibility/CommandPalette.tsx"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: v3854-port-evidence
+          path: ${{ runner.temp }}/compatibility
+          retention-days: 14
+          if-no-files-found: warn
