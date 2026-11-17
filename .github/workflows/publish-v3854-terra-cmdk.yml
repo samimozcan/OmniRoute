@@ -1,0 +1,208 @@
+name: Publish smoke-tested v3.8.54 immutable image
+
+on:
+  push:
+    branches: [feat/v3.8.54-terra-cmdk]
+    paths:
+      - .github/workflows/publish-v3854-terra-cmdk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+concurrency:
+  group: publish-v3854-terra-cmdk
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/samimozcan/omniroute
+  SOURCE_SHA: 1abf7bb07fbc1afc612ec8244968ce97b0f40b76
+  BUILD_RUN: '44154777213'
+  RELEASE_TAG: 3.8.54-terra-cmdk-1abf7bb07fbc
+  AMD64_DIGEST: sha256:7d88a382fcad419e70f36def12c8f2497b5c0d350d7d1ea5baddb9db98ec3231
+  ARM64_DIGEST: sha256:592574f7b994271b542cff2a998167a6de94f24e0dfc6e4e899d1e1bb507352f
+
+jobs:
+  publish:
+    if: github.repository == 'samimozcan/OmniRoute' && github.ref == 'refs/heads/feat/v3.8.54-terra-cmdk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Verify the completed source-specific regression and native smoke jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/publication"
+          gh api "repos/samimozcan/OmniRoute/actions/runs/${BUILD_RUN}" > "$RUNNER_TEMP/publication/build-run.json"
+          gh api "repos/samimozcan/OmniRoute/actions/runs/${BUILD_RUN}/jobs?per_page=100" > "$RUNNER_TEMP/publication/build-jobs.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']) / 'publication'
+          run = json.loads((directory / 'build-run.json').read_text())
+          jobs = json.loads((directory / 'build-jobs.json').read_text())
+          assert run['head_sha'] == os.environ['SOURCE_SHA']
+          assert run['head_branch'] == 'feat/v3.8.54-terra-cmdk'
+          assert run['status'] == 'completed'
+          expected = {
+              'regression': 134292449564,
+              'Native build and restart smoke amd64': 134293716391,
+              'Native build and restart smoke arm64': 134293718546,
+          }
+          for name, job_id in expected.items():
+              found = [j for j in jobs['jobs'] if j['name'] == name and j['id'] == job_id]
+              assert len(found) == 1 and found[0]['conclusion'] == 'success', name
+          assert jobs['total_count'] == len(jobs['jobs'])
+          non_green = [j['name'] for j in jobs['jobs'] if j['conclusion'] != 'success']
+          assert set(non_green) <= {'Full npm test on candidate', 'Full npm test on release'}, non_green
+          print('Verified focused regression and both native smoke jobs for source', run['head_sha'])
+          print('Full npm test runs were incomplete at the 18-minute bound; no full-suite success is claimed.')
+          PY
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44154777213
+          pattern: v3854-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Verify artifact identity and prepare anonymous registry verification
+        run: |
+          set -euo pipefail
+          test "$(cat "$RUNNER_TEMP/digests/amd64")" = "$AMD64_DIGEST"
+          test "$(cat "$RUNNER_TEMP/digests/arm64")" = "$ARM64_DIGEST"
+          test "$(cat "$RUNNER_TEMP/digests/amd64-source")" = "$SOURCE_SHA"
+          test "$(cat "$RUNNER_TEMP/digests/arm64-source")" = "$SOURCE_SHA"
+          cat > "$RUNNER_TEMP/verify-registry.py" <<'PY'
+          """Read-only anonymous verification. Never prints access tokens."""
+          import hashlib, json, os, sys
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          root = 'https://ghcr.io/v2/samimozcan/omniroute/'
+          accept = ', '.join([
+              'application/vnd.oci.image.index.v1+json',
+              'application/vnd.oci.image.manifest.v1+json',
+              'application/vnd.docker.distribution.manifest.list.v2+json',
+              'application/vnd.docker.distribution.manifest.v2+json',
+          ])
+          with urlopen('https://ghcr.io/token?service=ghcr.io&scope=repository:samimozcan/omniroute:pull', timeout=30) as response:
+              token = json.load(response)['token']
+          source = os.environ['SOURCE_SHA']
+          out = Path(os.environ['RUNNER_TEMP']) / 'publication'
+          old_digest = 'sha256:9908557122bf681e5a0523da75f5cf28fcfa745595c2b7c1c137336d75cdcbf1'
+          protected = {
+              '3.8.53-terra-cmdk-ce57802a69b8': old_digest,
+              '3.8.53-terra-cmdk': old_digest,
+              'terra-18912': old_digest,
+              'sha-ce57802a69b8f2669f7ce946847c5bb406b7d79e': old_digest,
+          }
+          new_tags = [os.environ['RELEASE_TAG'], 'sha-' + source]
+
+          def get(path, expected=None):
+              request = Request(root + path, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Accept': accept,
+                  'Cache-Control': 'no-cache',
+              })
+              with urlopen(request, timeout=30) as response:
+                  raw = response.read(4 * 1024 * 1024 + 1)
+                  if len(raw) > 4 * 1024 * 1024:
+                      raise RuntimeError('Oversized registry metadata')
+                  digest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+                  declared = response.headers.get('Docker-Content-Digest')
+                  if declared and declared != digest:
+                      raise RuntimeError('Registry header digest mismatch')
+                  if expected and digest != expected:
+                      raise RuntimeError('Unexpected manifest/config digest: ' + path)
+                  return digest, json.loads(raw)
+
+          def protected_refs():
+              found = {}
+              for tag, expected in protected.items():
+                  digest, _ = get('manifests/' + tag, expected)
+                  found[tag] = digest
+              rollback_tag = '3.8.53-terra-cmdk-bb54c3ffd6c3'
+              found[rollback_tag] = get('manifests/' + rollback_tag)[0]
+              return found
+
+          def platforms(reference):
+              digest, doc = get('manifests/' + reference, reference if reference.startswith('sha256:') else None)
+              result = []
+              for item in doc.get('manifests', []):
+                  p = item.get('platform', {})
+                  if p.get('os') != 'linux' or p.get('architecture') not in ('amd64', 'arm64'):
+                      continue
+                  _, manifest = get('manifests/' + item['digest'], item['digest'])
+                  config_digest = manifest['config']['digest']
+                  _, config = get('blobs/' + config_digest, config_digest)
+                  labels = config.get('config', {}).get('Labels', {})
+                  assert labels.get('org.opencontainers.image.revision') == source
+                  assert labels.get('org.opencontainers.image.version') == '3.8.54-terra-cmdk-' + source
+                  assert config.get('os') == 'linux' and config.get('architecture') == p['architecture']
+                  result.append({'platform': 'linux/' + p['architecture'], 'manifest': item['digest'], 'config': config_digest, 'source': source})
+              return digest, sorted(result, key=lambda x: x['platform'])
+
+          if sys.argv[1] == 'before':
+              for tag in new_tags:
+                  try:
+                      get('manifests/' + tag)
+                  except HTTPError as error:
+                      if error.code != 404:
+                          raise
+                  else:
+                      raise RuntimeError('Refusing to overwrite an existing tag: ' + tag)
+              for env, arch in [('AMD64_DIGEST', 'amd64'), ('ARM64_DIGEST', 'arm64')]:
+                  _, entries = platforms(os.environ[env])
+                  assert [e['platform'] for e in entries] == ['linux/' + arch]
+              (out / 'protected-before.json').write_text(json.dumps(protected_refs(), indent=2))
+              print('Anonymous source/platform verification passed; new tags are absent and old tags are protected.')
+          elif sys.argv[1] == 'after':
+              before = json.loads((out / 'protected-before.json').read_text())
+              assert before == protected_refs(), 'Protected image tag changed'
+              checks = [platforms(tag) for tag in new_tags]
+              assert checks[0] == checks[1], 'Published tags differ'
+              digest, entries = checks[0]
+              assert [e['platform'] for e in entries] == ['linux/amd64', 'linux/arm64']
+              result = {
+                  'image': os.environ['IMAGE_NAME'], 'tag': new_tags[0],
+                  'commit_tag': new_tags[1], 'digest': digest, 'source': source,
+                  'platforms': entries, 'protected_tags_unchanged': before,
+                  'full_test_suite': 'incomplete: upstream and candidate reached 18-minute bound',
+                  'deployed': False,
+              }
+              (out / 'published-image.json').write_text(json.dumps(result, indent=2) + '\n')
+              print(json.dumps(result, indent=2))
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write('Published immutable image: `' + result['image'] + ':' + result['tag'] + '`\n\nDigest: `' + digest + '`\n\nSource: `' + source + '`\n\nBoth native platforms, anonymous registry access and old tags verified. Focused tests and native smoke passed. Full suite incomplete; no deployment.\n')
+          else:
+              raise RuntimeError('Unknown verification phase')
+          PY
+          python3 "$RUNNER_TEMP/verify-registry.py" before
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish only new immutable tags from the two verified digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${RELEASE_TAG}" \
+            --tag "${IMAGE_NAME}:sha-${SOURCE_SHA}" \
+            "${IMAGE_NAME}@${AMD64_DIGEST}" \
+            "${IMAGE_NAME}@${ARM64_DIGEST}"
+          docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}"
+      - name: Verify published manifest source platforms and unchanged rollback tags anonymously
+        run: python3 "$RUNNER_TEMP/verify-registry.py" after
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: v3854-publication-evidence
+          path: ${{ runner.temp }}/publication
+          if-no-files-found: error
+          retention-days: 30
