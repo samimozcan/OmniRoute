@@ -27,6 +27,7 @@ jobs:
       NEW_BASE: 1c880c5c95b3f0240d5e4c6c8f0947ec46b5d25e
       DISABLE_SQLITE_AUTO_BACKUP: 'true'
       OMNIROUTE_SKIP_SYSTEM_TRUST: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,32 +54,58 @@ jobs:
         run: |
           set +e
           node --import tsx/esm --import ./open-sse/utils/setupPolyfill.ts --import ./tests/_setup/isolateDataDir.ts --test --test-force-exit tests/unit/openai-canonical-effort-18912.test.ts tests/unit/openai-reporting-retirement.test.ts > "$RUNNER_TEMP/compatibility/node-before.log" 2>&1
-          result=$?
-          echo "NODE_BEFORE_EXIT=$result"
-          grep -E '^.(tests|suites|pass|fail)|^.(✔|✖)|thinking is not an OpenAI Chat field' "$RUNNER_TEMP/compatibility/node-before.log" | head -n 75
+          echo "NODE_BEFORE_EXIT=$?"
+          grep -E 'tests [0-9]+|pass [0-9]+|fail [0-9]+' "$RUNNER_TEMP/compatibility/node-before.log"
           node node_modules/vitest/vitest.mjs run --config vitest.config.ts --maxWorkers=2 tests/unit/ui/command-palette-frequency.test.tsx tests/unit/ui/command-palette-kit.test.tsx > "$RUNNER_TEMP/compatibility/ui-before.log" 2>&1
           echo "UI_BEFORE_EXIT=$?"
-          tail -n 12 "$RUNNER_TEMP/compatibility/ui-before.log"
-          # The baseline is evidence, not a passing regression gate.
+          grep -E 'Test Files|Tests |Duration' "$RUNNER_TEMP/compatibility/ui-before.log" | tail -n 5
           exit 0
-      - name: Apply reviewed selective delta and preserve new upstream palette behavior
+      - name: Apply reviewed selective delta without overwriting the encryption probe
         run: |
           set -euo pipefail
           rm src/shared/utils/commandPalettePreferences.ts
-          python3 scripts/ad-hoc/port-v3854-compatibility.py
-          git diff --check
           python3 - <<'PY'
           import importlib.util, subprocess
+          from pathlib import Path
           spec = importlib.util.spec_from_file_location('port', 'scripts/ad-hoc/port-v3854-compatibility.py')
           module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+          enc = 'src/lib/db/encryption.ts'
+          original = Path(enc).read_text()
+          if original.encode() != module.git('show', module.NEW_BASE + ':' + enc):
+              raise SystemExit('Encryption source drift')
+          old = module.git('show', module.OLD_HEAD + ':' + enc).decode()
+          marker = '/**\n * Encrypt sensitive fields in a connection object (mutates in-place).'
+          start = old.index('/** Filter both metadata representations accepted by legacy JSON imports without mutation. */')
+          helper = old[start:old.index(marker, start)]
+          edited = original
+          replacements = [
+              ('import { mapProviderSpecificDataSecrets } from "./providers/providerSpecificDataSecrets";',
+               'import { mapProviderSpecificDataSecrets, omitRetiredOpenAIReportingMetadata } from "./providers/providerSpecificDataSecrets";'),
+              (marker, helper + marker),
+              ('  if (!isEncryptionEnabled()) return conn;\n  if (!conn) return conn;',
+               '  if (!conn) return conn;\n  Object.assign(conn, omitRetiredConnectionMetadata(conn));\n  if (!isEncryptionEnabled()) return conn;'),
+              ('  if (!row) return row;\n  if (!isEncryptionEnabled()) return row;',
+               '  if (!row) return row;\n  row = omitRetiredConnectionMetadata(row);\n  if (!isEncryptionEnabled()) return row;'),
+          ]
+          for before, after in replacements:
+              if edited.count(before) != 1:
+                  raise SystemExit('Encryption anchor missing or ambiguous: ' + before[:90])
+              edited = edited.replace(before, after, 1)
+          probe = original[original.index('let keyStoreDecryptable:'):original.index(marker)]
+          if probe not in edited:
+              raise SystemExit('Upstream encryption health probe was modified')
           allowed = set(module.PATCH_PATHS + module.TEST_PATHS + [module.PALETTE])
+          module.PATCH_PATHS.remove(enc)
+          module.main()
+          Path(enc).write_text(edited)
           changed = set(subprocess.check_output(['git', 'diff', '--name-only', 'HEAD']).decode().splitlines())
           untracked = set(subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard']).decode().splitlines())
           if (changed | untracked) - allowed:
               raise SystemExit('Unexpected changed files: ' + str((changed | untracked) - allowed))
-          with open('/tmp/v3854-changed-paths', 'w') as out:
-              out.write('\n'.join(sorted(allowed)) + '\n')
+          Path('/tmp/v3854-changed-paths').write_text('\n'.join(sorted(allowed)) + '\n')
+          print('ENCRYPTION_PROBE_PRESERVED_BYTE_IDENTICAL')
           PY
+          git diff --check
           xargs -d '\n' node node_modules/prettier/bin/prettier.cjs --write < /tmp/v3854-changed-paths
           git diff HEAD --stat
       - name: Verify Terra and adjacent request and retired metadata regressions
