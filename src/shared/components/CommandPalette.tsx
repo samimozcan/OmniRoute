@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
@@ -20,12 +20,26 @@ import {
   ESSENTIALS_ADVANCED_TOOL_IDS,
   normalizeHiddenSidebarItems,
   resolveRuntimeSidebarSections,
+  getSectionItems,
   type HideableSidebarItemId,
   type SidebarItemDefinition,
   type SidebarSectionChild,
 } from "@/shared/constants/sidebarVisibility";
+import {
+  orderCommandPaletteItems,
+  readCommandPalettePreferences,
+  recordCommandPaletteExecution,
+  saveCommandPalettePreferences,
+} from "@/shared/utils/commandPalettePreferences";
 import Button from "./Button";
 import Icon from "./Icon";
+import Toggle from "./Toggle";
+
+// Keep hidden commands' history, but never resurrect removed stored command IDs.
+const KNOWN_COMMAND_IDS = new Set([
+  ...SIDEBAR_SECTIONS.flatMap(getSectionItems).map((item) => item.id),
+  "radar-admin",
+]);
 
 function isSidebarGroup(
   child: SidebarSectionChild
@@ -97,21 +111,30 @@ interface PaletteGroup {
 
 function PaletteOption({
   item,
+  paletteId,
+  showContext = false,
   onNavigate,
 }: {
   item: PaletteItem;
-  onNavigate: (href: string, external: boolean) => void;
+  paletteId: string;
+  showContext?: boolean;
+  onNavigate: (item: PaletteItem) => void;
 }) {
   return (
     <CommandItem
+      id={`${paletteId}-${item.id}`}
       value={item.label}
       keywords={[item.subtitle, item.sectionLabel, item.subgroupLabel].filter(
         (keyword): keyword is string => Boolean(keyword)
       )}
       icon={<Icon name={item.icon} size={18} />}
-      description={item.subtitle || undefined}
+      description={
+        showContext
+          ? [item.sectionLabel, item.subgroupLabel, item.subtitle].filter(Boolean).join(" · ")
+          : item.subtitle || undefined
+      }
       shortcut={item.external ? <Icon name="open_in_new" size={14} /> : undefined}
-      onSelect={() => onNavigate(item.href, item.external)}
+      onSelect={() => onNavigate(item)}
     >
       {item.label}
     </CommandItem>
@@ -121,11 +144,15 @@ function PaletteOption({
 function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const t = useTranslations("sidebar");
+  const paletteId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [hiddenItems, setHiddenItems] = useState<Set<string>>(new Set());
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [radarAdminUrl, setRadarAdminUrl] = useState<unknown>(null);
+  const [preferences, setPreferences] = useState(() =>
+    readCommandPalettePreferences(KNOWN_COMMAND_IDS)
+  );
   // The palette has no DialogTrigger (Radix's own focus return target) and mounts fresh on
   // open, so the element focused before the first render is the one to return to on close.
   const [opener] = useState<HTMLElement | null>(() => {
@@ -272,16 +299,31 @@ function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
     return groups;
   }, [ranked]);
 
+  const frequencyOrder =
+    preferences.mostUsedFirst && allItems.some((item) => preferences.counts[item.id] > 0);
+  // Frequency ordering starts from sidebar order, not the query-ranked array:
+  // equal count and match quality must retain their original deterministic order.
+  const orderedItems = useMemo(
+    () => orderCommandPaletteItems(allItems, query, preferences.counts),
+    [allItems, query, preferences.counts]
+  );
+
   const handleNavigate = useCallback(
-    (href: string, external: boolean) => {
-      onClose();
-      if (external) {
-        window.open(href, "_blank", "noopener,noreferrer");
+    (item: PaletteItem) => {
+      if (item.external) {
+        window.open(item.href, "_blank", "noopener,noreferrer");
       } else {
-        router.push(href);
+        router.push(item.href);
       }
+      // Enter and mouse share CommandItem.onSelect: only execution counts once.
+      const next = recordCommandPaletteExecution(preferences, item.id, KNOWN_COMMAND_IDS);
+      if (next !== preferences) {
+        setPreferences(next);
+        saveCommandPalettePreferences(next);
+      }
+      onClose();
     },
-    [onClose, router]
+    [onClose, router, preferences]
   );
 
   return (
@@ -304,6 +346,7 @@ function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
       >
         <DialogTitle className="ci-sr-only">{t("commandPalette.title")}</DialogTitle>
         <Command
+          key={preferences.mostUsedFirst ? "most-used" : "original"}
           query={query}
           onQueryChange={setQuery}
           className="[--ci-command-list-max-height:60vh]"
@@ -334,42 +377,69 @@ function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
             }
           />
           <CommandList aria-label={t("commandPalette.title")} className="custom-scrollbar">
-            {grouped.map((group) => (
-              <CommandGroup key={group.sectionId} heading={group.sectionLabel}>
-                {group.subgroups.map((subgroup) => {
-                  const options = subgroup.items.map((item) => (
-                    <PaletteOption key={item.id} item={item} onNavigate={handleNavigate} />
-                  ));
-                  return subgroup.subgroupLabel ? (
-                    <CommandGroup key={subgroup.subgroupId} heading={subgroup.subgroupLabel}>
-                      {options}
-                    </CommandGroup>
-                  ) : (
-                    options
-                  );
-                })}
-              </CommandGroup>
-            ))}
+            {frequencyOrder
+              ? orderedItems.map((item) => (
+                  <PaletteOption
+                    key={item.id}
+                    item={item}
+                    paletteId={paletteId}
+                    showContext
+                    onNavigate={handleNavigate}
+                  />
+                ))
+              : grouped.map((group) => (
+                  <CommandGroup key={group.sectionId} heading={group.sectionLabel}>
+                    {group.subgroups.map((subgroup) => {
+                      const options = subgroup.items.map((item) => (
+                        <PaletteOption
+                          key={item.id}
+                          item={item}
+                          paletteId={paletteId}
+                          onNavigate={handleNavigate}
+                        />
+                      ));
+                      return subgroup.subgroupLabel ? (
+                        <CommandGroup key={subgroup.subgroupId} heading={subgroup.subgroupLabel}>
+                          {options}
+                        </CommandGroup>
+                      ) : (
+                        options
+                      );
+                    })}
+                  </CommandGroup>
+                ))}
           </CommandList>
           <CommandEmpty>{t("noResults")}</CommandEmpty>
         </Command>
 
-        <div className="flex items-center gap-4 border-t border-border px-5 py-2 text-[11px] text-text-muted">
-          <span className="flex items-center gap-1">
-            <KbdGroup>
-              <Kbd>↑</Kbd>
-              <Kbd>↓</Kbd>
-            </KbdGroup>
-            {t("commandPalette.navigate")}
-          </span>
-          <span className="flex items-center gap-1">
-            <Kbd>↵</Kbd>
-            {t("commandPalette.open")}
-          </span>
-          <span className="flex items-center gap-1">
-            <Kbd>Esc</Kbd>
-            {t("commandPalette.close")}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border px-5 py-2 text-[11px] text-text-muted">
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-1">
+              <KbdGroup>
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd>
+              </KbdGroup>
+              {t("commandPalette.navigate")}
+            </span>
+            <span className="flex items-center gap-1">
+              <Kbd>↵</Kbd>
+              {t("commandPalette.open")}
+            </span>
+            <span className="flex items-center gap-1">
+              <Kbd>Esc</Kbd>
+              {t("commandPalette.close")}
+            </span>
+          </div>
+          <Toggle
+            size="sm"
+            label={safeTranslate("commandPalette.mostUsedFirst", "Most used first")}
+            checked={preferences.mostUsedFirst}
+            onChange={(mostUsedFirst) => {
+              const next = { ...preferences, mostUsedFirst };
+              setPreferences(next);
+              saveCommandPalettePreferences(next);
+            }}
+          />
         </div>
       </DialogContent>
     </Dialog>
