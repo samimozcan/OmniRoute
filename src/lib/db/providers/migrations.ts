@@ -57,8 +57,11 @@ export function ensureProviderSpecificDataSecretsEncrypted(db: DbLike): number {
     db.transaction(() => {
       for (const row of rows) {
         const psd = parseProviderSpecificData(row.provider_specific_data);
-        const next = mapProviderSpecificDataSecrets(psd, (value) =>
-          looksEncrypted(value) ? value : encrypt(value)
+        const next = mapProviderSpecificDataSecrets(
+          psd,
+          (value) => (looksEncrypted(value) ? value : encrypt(value)),
+          // This read-triggered sweep only envelopes active secrets; retirement is a view filter.
+          { preserveRetiredReportingMetadata: true }
         );
         if (next === psd) continue;
         update.run(JSON.stringify(next), row.id);

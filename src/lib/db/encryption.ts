@@ -84,7 +84,10 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { isTestContext, resolveDataDir } from "../dataPaths.ts";
-import { mapProviderSpecificDataSecrets } from "./providers/providerSpecificDataSecrets";
+import {
+  mapProviderSpecificDataSecrets,
+  omitRetiredOpenAIReportingMetadata,
+} from "./providers/providerSpecificDataSecrets";
 
 // Same as bin/cli/utils/parseEnvValue.mjs: quoted values are verbatim, and an
 // unquoted `#` preceded by whitespace starts a comment. The copy in
@@ -609,14 +612,28 @@ export function probeStoredSecrets(db: {
   return keyStoreDecryptable;
 }
 
+/** Filter both metadata representations accepted by legacy JSON imports without mutation. */
+function omitRetiredConnectionMetadata<T extends ConnectionFields | null | undefined>(conn: T): T {
+  if (!conn) return conn;
+  let updated: ConnectionFields | null = null;
+  for (const field of ["providerSpecificData", "provider_specific_data"]) {
+    const filtered = omitRetiredOpenAIReportingMetadata(conn[field]);
+    if (filtered === conn[field]) continue;
+    updated ??= { ...conn };
+    updated[field] = filtered;
+  }
+  return (updated ?? conn) as T;
+}
+
 /**
  * Encrypt sensitive fields in a connection object (mutates in-place).
  * After decryption that required legacy key, re-encrypt with static key
  * to migrate tokens automatically.
  */
 export function encryptConnectionFields<T extends ConnectionFields | null | undefined>(conn: T): T {
-  if (!isEncryptionEnabled()) return conn;
   if (!conn) return conn;
+  Object.assign(conn, omitRetiredConnectionMetadata(conn));
+  if (!isEncryptionEnabled()) return conn;
 
   if (conn.apiKey) conn.apiKey = encrypt(conn.apiKey);
   if (conn.accessToken) conn.accessToken = encrypt(conn.accessToken);
@@ -638,6 +655,7 @@ export function encryptConnectionFields<T extends ConnectionFields | null | unde
  */
 export function decryptConnectionFields<T extends ConnectionFields | null | undefined>(row: T): T {
   if (!row) return row;
+  row = omitRetiredConnectionMetadata(row);
   if (!isEncryptionEnabled()) return row;
 
   // quiet:true — the low-level generic decrypt() log is suppressed here so a
