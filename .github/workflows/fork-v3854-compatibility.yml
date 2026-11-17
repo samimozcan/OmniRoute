@@ -1,0 +1,96 @@
+name: Audit v3.8.54 Terra and Cmd K compatibility
+
+on:
+  push:
+    branches: [feat/v3.8.54-terra-cmdk]
+    paths:
+      - .github/workflows/fork-v3854-compatibility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-v3854-compatibility
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.repository == 'samimozcan/OmniRoute'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      OLD_BASE: 191dce8d534ceb56c28a08e71381284a9a87838f
+      OLD_HEAD: ce57802a69b8f2669f7ce946847c5bb406b7d79e
+      NEW_BASE: 1c880c5c95b3f0240d5e4c6c8f0947ec46b5d25e
+      DISABLE_SQLITE_AUTO_BACKUP: 'true'
+      OMNIROUTE_SKIP_SYSTEM_TRUST: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Fetch pinned comparison sources and import regression probes only
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$OLD_BASE" "$OLD_HEAD" "$NEW_BASE"
+          node -e 'require("node:assert/strict").equal(require("./package.json").version, "3.8.54")'
+          mkdir -p "$RUNNER_TEMP/compatibility"
+          for file in tests/unit/openai-canonical-effort-18912.test.ts tests/unit/ui/command-palette-frequency.test.tsx; do
+            git show "$OLD_HEAD:$file" > "$file"
+          done
+          # The old UI tests import this pure helper. Make it available only to
+          # the probe; the upstream CommandPalette still does not import/use it.
+          test ! -e src/shared/utils/commandPalettePreferences.ts
+          git show "$OLD_HEAD:src/shared/utils/commandPalettePreferences.ts" > src/shared/utils/commandPalettePreferences.ts
+          git diff "$NEW_BASE" -- open-sse src/shared/components/CommandPalette.tsx
+      - name: Install locked dependencies
+        uses: ./.github/actions/npm-ci-retry
+        with:
+          cache: 'false'
+      - name: Record Terra behavior before any production patch
+        run: |
+          set +e
+          node --import tsx/esm --import ./open-sse/utils/setupPolyfill.ts --import ./tests/_setup/isolateDataDir.ts --test --test-force-exit tests/unit/openai-canonical-effort-18912.test.ts > "$RUNNER_TEMP/compatibility/terra-baseline.log" 2>&1
+          result=$?
+          printf 'TERRA_BASELINE_EXIT=%s\n' "$result"
+          tail -n 180 "$RUNNER_TEMP/compatibility/terra-baseline.log"
+          printf 'Terra baseline exit: %s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record Cmd K behavior before any production patch
+        run: |
+          set +e
+          node node_modules/vitest/vitest.mjs run --config vitest.config.ts --maxWorkers=2 tests/unit/ui/command-palette-frequency.test.tsx tests/unit/ui/command-palette-kit.test.tsx > "$RUNNER_TEMP/compatibility/cmdk-baseline.log" 2>&1
+          result=$?
+          printf 'CMDK_BASELINE_EXIT=%s\n' "$result"
+          tail -n 180 "$RUNNER_TEMP/compatibility/cmdk-baseline.log"
+          printf 'Cmd K baseline exit: %s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check selective patch applicability without committing or publishing
+        run: |
+          set -euo pipefail
+          rm src/shared/utils/commandPalettePreferences.ts
+          git diff --binary "$OLD_BASE" "$OLD_HEAD" -- \
+            open-sse/translator/helpers/openaiHelper.ts \
+            open-sse/translator/index.ts \
+            src/shared/components/CommandPalette.tsx \
+            src/shared/utils/commandPalettePreferences.ts \
+            src/i18n/messages/en.json src/i18n/messages/pt-BR.json \
+            src/i18n/messages/tr.json src/i18n/messages/vi.json \
+            > "$RUNNER_TEMP/compatibility/selected.patch"
+          set +e
+          git apply --3way --check "$RUNNER_TEMP/compatibility/selected.patch" > "$RUNNER_TEMP/compatibility/applicability.log" 2>&1
+          result=$?
+          printf 'SELECTIVE_PATCH_CHECK_EXIT=%s\n' "$result"
+          cat "$RUNNER_TEMP/compatibility/applicability.log"
+          printf 'Selective patch applicability exit: %s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          printf '\nRead-only baseline audit. No production patch committed, no image built or published, no deployment.\n' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: v3854-compatibility-evidence
+          path: ${{ runner.temp }}/compatibility
+          retention-days: 14
+          if-no-files-found: warn
